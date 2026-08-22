@@ -10,7 +10,7 @@ const { GoogleGenAI } = require("@google/genai");
 const { apiLimiter } = require("./rateLimit");
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = Number(process.env.PORT) || 3000;
 
 app.disable("x-powered-by");
 
@@ -39,21 +39,34 @@ app.use(
   })
 );
 
+/* =========================================================
+   RATE LIMIT
+========================================================= */
+
 app.use("/api", apiLimiter);
 
 /* =========================================================
    GEMINI
 ========================================================= */
 
-const apiKey = (
-  process.env.AI_API_KEY || ""
-).trim();
+const apiKey =
+  String(process.env.AI_API_KEY || "").trim();
+
+const MODEL =
+  String(
+    process.env.AI_MODEL ||
+      "gemini-3.6-flash"
+  ).trim();
 
 const ai = apiKey
   ? new GoogleGenAI({
       apiKey
     })
   : null;
+
+/* =========================================================
+   API KEY CHECK
+========================================================= */
 
 function requireApiKey(req, res, next) {
   if (!ai) {
@@ -68,91 +81,41 @@ function requireApiKey(req, res, next) {
 }
 
 /* =========================================================
-   MODEL
+   HEALTH
 ========================================================= */
 
-const MODEL =
-  process.env.AI_MODEL ||
-  "gemini-3.6-flash";
+app.get("/api/health", (req, res) => {
+  res.json({
+    ok: true,
+    name: "Lunex",
+    status: "online",
+    aiConfigured: Boolean(ai),
+    model: MODEL
+  });
+});
 
 /* =========================================================
-   LUNEX SYSTEM PROMPT
+   CLEAN HISTORY
 ========================================================= */
 
-const LUNEX_INSTRUCTIONS = `
-أنت Lunex، مساعد برمجة احترافي جدًا.
+function cleanHistory(history) {
+  if (!Array.isArray(history)) {
+    return [];
+  }
 
-تخصصك الأساسي:
-
-- Roblox Studio
-- Luau
-- Lua
-- Roblox APIs
-- RemoteEvents
-- RemoteFunctions
-- Client/Server
-- ModuleScripts
-- DataStore
-- MemoryStore
-- MessagingService
-- TweenService
-- RunService
-- UI
-- Physics
-- Performance
-- Debugging
-- Roblox Security
-- Game Development
-
-القواعد:
-
-1. افهم السؤال قبل الإججابة.
-2. لا تخترع API غير موجودة.
-3. عند كتابة Luau اجعله مناسبًا لـ Roblox Studio.
-4. وضح مكان وضع الكود إذا كان ذلك مهمًا.
-5. فرّق بين Script و LocalScript و ModuleScript.
-6. انتبه لأمان RemoteEvents.
-7. حلل الأخطاء بدل إعطاء حلول عشوائية.
-8. إذا كان هناك حل أفضل، اقترحه.
-9. لا تكشف أسرار الخادم أو API keys.
-10. عندما يكتب المستخدم بالعربية، أجب بالعربية.
-11. كن عمليًا ودقيقًا.
-12. عند إعطاء كود، اجعله كاملًا وقابلًا للنسخ قدر الإمكان.
-13. استخدم Markdown code fences للكود، مثل:
-\`\`\`lua
-الكود
-\`\`\`
-14. لا تضع الكود خارج code fence إذا كان المقصود نسخه.
-`;
-
-/* =========================================================
-   BUILD CONTENTS
-========================================================= */
-
-function buildContents({
-  message,
-  history = []
-}) {
-  const contents = [];
-
-  for (const item of history) {
-    if (
-      !item ||
-      !["user", "assistant", "model"].includes(
-        item.role
-      )
-    ) {
-      continue;
-    }
-
-    if (
-      typeof item.content !== "string" ||
-      !item.content.trim()
-    ) {
-      continue;
-    }
-
-    contents.push({
+  return history
+    .filter((item) => {
+      return (
+        item &&
+        typeof item.content === "string" &&
+        item.content.trim() &&
+        ["user", "assistant", "model"].includes(
+          item.role
+        )
+      );
+    })
+    .slice(-30)
+    .map((item) => ({
       role:
         item.role === "assistant"
           ? "model"
@@ -163,30 +126,17 @@ function buildContents({
           text: item.content.slice(0, 20000)
         }
       ]
-    });
-  }
-
-  contents.push({
-    role: "user",
-
-    parts: [
-      {
-        text: message.slice(0, 50000)
-      }
-    ]
-  });
-
-  return contents;
+    }));
 }
 
 /* =========================================================
-   NORMAL AI REQUEST
+   ASK GEMINI
 ========================================================= */
 
 async function askAI({
   message,
   history = [],
-  instructions
+  instructions = ""
 }) {
   if (!ai) {
     throw new Error(
@@ -194,9 +144,16 @@ async function askAI({
     );
   }
 
-  const contents = buildContents({
-    message,
-    history
+  const contents = cleanHistory(history);
+
+  contents.push({
+    role: "user",
+
+    parts: [
+      {
+        text: String(message).slice(0, 100000)
+      }
+    ]
   });
 
   const response =
@@ -208,17 +165,21 @@ async function askAI({
       config: {
         systemInstruction:
           instructions ||
-          LUNEX_INSTRUCTIONS,
+          "You are Lunex, a professional AI assistant.",
+
+        temperature: 0.2,
 
         maxOutputTokens:
           Number(
             process.env.AI_MAX_TOKENS
-          ) || 5000
+          ) || 8000
       }
     });
 
   const text =
-    response?.text || "";
+    typeof response?.text === "string"
+      ? response.text
+      : "";
 
   if (!text.trim()) {
     throw new Error(
@@ -230,182 +191,67 @@ async function askAI({
 }
 
 /* =========================================================
-   STREAM CHAT
+   LUNEX SYSTEM PROMPT
 ========================================================= */
 
-app.post(
-  "/api/chat/stream",
-  requireApiKey,
-  async (req, res) => {
-    try {
-      const message =
-        typeof req.body?.message === "string"
-          ? req.body.message.trim()
-          : "";
+const LUNEX_INSTRUCTIONS = `
+أنت Lunex، مساعد برمجة احترافي.
 
-      const history =
-        Array.isArray(req.body?.history)
-          ? req.body.history
-          : [];
+تخصصك الأساسي:
 
-      if (!message) {
-        return res.status(400).json({
-          ok: false,
-          error: "الرسالة فارغة."
-        });
-      }
+- Roblox Studio
+- Luau
+- Lua
+- Roblox APIs
+- Scripts
+- LocalScripts
+- ModuleScripts
+- RemoteEvents
+- RemoteFunctions
+- Client / Server
+- DataStore
+- MemoryStore
+- MessagingService
+- TweenService
+- RunService
+- UserInputService
+- ContextActionService
+- Roblox UI
+- GUI
+- Physics
+- Performance
+- Debugging
+- Security
+- Game Development
 
-      const contents =
-        buildContents({
-          message,
-          history
-        });
+قواعد مهمة:
 
-      /*
-       * SSE
-       */
+1. افهم طلب المستخدم قبل الإجابة.
+2. لا تخترع Roblox APIs.
+3. إذا كان السؤال عن Luau، اكتب Luau صالحًا لـ Roblox Studio.
+4. وضح أين يوضع الكود عند الحاجة.
+5. فرّق بوضوح بين Script و LocalScript و ModuleScript.
+6. اهتم بأمان السيرفر وRemoteEvents.
+7. لا تثق بمدخلات العميل.
+8. لا تكشف API keys أو أسرار الخادم.
+9. إذا أعطاك المستخدم خطأ، حلله بدل التخمين.
+10. إذا كان هناك أكثر من حل، اختر الأفضل واشرح السبب.
+11. عندما يطلب المستخدم كودًا، اجعله كاملًا وقابلًا للنسخ.
+12. استخدم Markdown عند الحاجة.
+13. ضع الأكواد داخل code blocks مثل:
 
-      res.status(200);
+\`\`\`lua
+-- code
+\`\`\`
 
-      res.setHeader(
-        "Content-Type",
-        "text/event-stream; charset=utf-8"
-      );
-
-      res.setHeader(
-        "Cache-Control",
-        "no-cache, no-transform"
-      );
-
-      res.setHeader(
-        "Connection",
-        "keep-alive"
-      );
-
-      res.setHeader(
-        "X-Accel-Buffering",
-        "no"
-      );
-
-      if (res.flushHeaders) {
-        res.flushHeaders();
-      }
-
-      const sendEvent = (
-        type,
-        data
-      ) => {
-        res.write(
-          `event: ${type}\n`
-        );
-
-        res.write(
-          `data: ${JSON.stringify(
-            data
-          )}\n\n`
-        );
-      };
-
-      sendEvent("start", {
-        model: MODEL
-      });
-
-      console.log(
-        "Starting Gemini stream:",
-        MODEL
-      );
-
-      const stream =
-        await ai.models.generateContentStream({
-          model: MODEL,
-
-          contents,
-
-          config: {
-            systemInstruction:
-              LUNEX_INSTRUCTIONS,
-
-            maxOutputTokens:
-              Number(
-                process.env.AI_MAX_TOKENS
-              ) || 5000
-          }
-        });
-
-      let fullText = "";
-
-      for await (
-        const chunk of stream
-      ) {
-        const text =
-          typeof chunk?.text ===
-          "string"
-            ? chunk.text
-            : "";
-
-        if (!text) {
-          continue;
-        }
-
-        fullText += text;
-
-        sendEvent("chunk", {
-          text
-        });
-      }
-
-      sendEvent("done", {
-        text: fullText
-      });
-
-      res.end();
-
-      console.log(
-        "Gemini stream completed."
-      );
-
-    } catch (error) {
-      console.error(
-        "STREAM CHAT ERROR:",
-        error
-      );
-
-      /*
-       * إذا ما زلنا نقدر نرسل SSE،
-       * أرسل الخطأ للواجهة.
-       */
-
-      try {
-        res.write(
-          `event: error\n`
-        );
-
-        res.write(
-          `data: ${JSON.stringify({
-            error:
-              error?.message ||
-              "تعذر إكمال الطلب."
-          })}\n\n`
-        );
-
-        res.end();
-
-      } catch {
-        if (!res.headersSent) {
-          res.status(500).json({
-            ok: false,
-            error:
-              error?.message ||
-              "تعذر إكمال الطلب."
-          });
-        }
-      }
-    }
-  }
-);
+14. لا تكتب الكود خارج code blocks إذا كان المقصود نسخه.
+15. إذا كان المستخدم يتحدث بالعربية، أجب بالعربية.
+16. لا تقل إنك نفذت شيئًا فعليًا إذا لم تنفذه.
+17. كن واضحًا ومباشرًا واحترافيًا.
+`;
 
 /* =========================================================
-   NORMAL CHAT FALLBACK
+   GENERAL CHAT
 ========================================================= */
 
 app.post(
@@ -430,15 +276,14 @@ app.post(
         });
       }
 
-      const reply =
-        await askAI({
-          message,
-          history,
-          instructions:
-            LUNEX_INSTRUCTIONS
-        });
+      const reply = await askAI({
+        message,
+        history,
+        instructions:
+          LUNEX_INSTRUCTIONS
+      });
 
-      res.json({
+      return res.json({
         ok: true,
         reply
       });
@@ -449,7 +294,7 @@ app.post(
         error
       );
 
-      res.status(500).json({
+      return res.status(500).json({
         ok: false,
         error:
           error?.message ||
@@ -480,10 +325,8 @@ app.post(
         });
       }
 
-      const report =
-        await askAI({
-          message: `
-افحص كود Luau التالي فحصًا احترافيًا ودقيقًا جدًا.
+      const prompt = `
+افحص كود Luau التالي فحصًا احترافيًا.
 
 ابحث عن:
 
@@ -492,8 +335,8 @@ app.post(
 - nil references
 - أخطاء المتغيرات
 - أخطاء scope
-- أخطاء Roblox API
-- Client/Server mistakes
+- Roblox API errors
+- Client / Server mistakes
 - RemoteEvent security
 - RemoteFunction security
 - loops
@@ -504,35 +347,64 @@ app.post(
 - typing problems
 - logical bugs
 
-رتب الأخطاء من الأخطر إلى الأقل.
+مهم جدًا:
 
-لكل خطأ استخدم:
+لا تخترع أخطاء.
 
-1. المشكلة:
-2. السطر:
-3. الخطورة:
-4. السبب:
-5. الحل:
+فرّق بين:
+- خطأ مؤكد
+- مشكلة محتملة
+- تحسين مقترح
 
-فرق بين الخطأ المؤكد والمشكلة المحتملة.
+رتب النتائج من الأخطر إلى الأقل.
 
-إذا لم تجد خطأ حقيقيًا، قل ذلك بوضوح.
+لكل خطأ استخدم هذا الشكل:
+
+[1]
+المشكلة:
+السطر:
+الخطورة:
+السبب:
+الحل:
+
+[2]
+المشكلة:
+السطر:
+الخطورة:
+السبب:
+الحل:
+
+إذا لم تجد أخطاء حقيقية، اكتب:
+
+لم يتم العثور على أخطاء مؤكدة.
+
+ثم اذكر تحسينات اختيارية إن وجدت.
 
 الكود:
 
 \`\`\`lua
 ${code.slice(0, 100000)}
 \`\`\`
-`,
+`;
 
-          instructions: `
-أنت Lunex Luau Code Analyzer.
+      const report = await askAI({
+        message: prompt,
 
-أنت متخصص في Luau وRoblox Studio.
+        instructions: `
+أنت Lunex Luau Analyzer.
 
-مهمتك اكتشاف الأخطاء الحقيقية وعدم اختراع أخطاء.
+وظيفتك تحليل كود Luau وRoblox Studio.
 
-افحص:
+كن دقيقًا جدًا.
+
+ممنوع اختراع:
+- APIs
+- أخطاء
+- أرقام أسطر غير مؤكدة
+
+إذا لم تستطع التأكد من شيء، قل إنه محتمل.
+
+ركز على:
 Syntax
 Runtime
 Roblox API
@@ -541,12 +413,10 @@ Security
 Performance
 Logic
 Memory
-
-رتب النتائج بوضوح.
 `
-        });
+      });
 
-      res.json({
+      return res.json({
         ok: true,
         report
       });
@@ -557,7 +427,7 @@ Memory
         error
       );
 
-      res.status(500).json({
+      return res.status(500).json({
         ok: false,
         error:
           error?.message ||
@@ -596,7 +466,7 @@ app.post(
 
 ${request}
 
-حدد:
+أعطني تصورًا منظمًا يشمل:
 
 - Layout
 - ترتيب العناصر
@@ -608,32 +478,35 @@ ${request}
 - الخطوط
 - Hover
 - Active
+- Disabled
 - حالات الخطأ
 - الجوال
 - الكمبيوتر
 - تجربة المستخدم
+- Responsive behavior
 
 إذا كانت الواجهة لـ Roblox Studio،
-اجعل التصميم مناسبًا لـ Roblox UI.
+اجعلها مناسبة لـ Roblox UI.
 
-ركز على تصميم نظيف وحديث واحترافي.
+ركز على تصميم حديث ونظيف واحترافي.
 `,
 
           instructions: `
 أنت Lunex UI Designer.
 
 متخصص في:
+
 - Web UI
 - Mobile UI
 - Roblox UI
 - UX
 - Design Systems
 
-اجعل التصميم عمليًا وحديثًا وسهل الاستخدام.
+صمم أفكارًا عملية وقابلة للتنفيذ.
 `
         });
 
-      res.json({
+      return res.json({
         ok: true,
         design
       });
@@ -644,7 +517,7 @@ ${request}
         error
       );
 
-      res.status(500).json({
+      return res.status(500).json({
         ok: false,
         error:
           error?.message ||
@@ -669,6 +542,10 @@ app.use(
   express.static(frontendPath)
 );
 
+/* =========================================================
+   SPA FALLBACK
+========================================================= */
+
 app.use(
   (req, res, next) => {
     if (
@@ -688,7 +565,7 @@ app.use(
 );
 
 /* =========================================================
-   404
+   API 404
 ========================================================= */
 
 app.use(
@@ -703,14 +580,14 @@ app.use(
       });
     }
 
-    res.status(404).send(
+    return res.status(404).send(
       "Lunex page not found."
     );
   }
 );
 
 /* =========================================================
-   ERROR
+   ERROR HANDLER
 ========================================================= */
 
 app.use(
@@ -724,7 +601,7 @@ app.use(
       return next(error);
     }
 
-    res.status(500).json({
+    return res.status(500).json({
       ok: false,
       error:
         "Internal server error."
