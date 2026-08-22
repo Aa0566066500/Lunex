@@ -111,7 +111,7 @@ app.post("/api/chat", rateLimit, async (req, res) => {
    SPA FALLBACK
 ========================================================= */
 
-app.get("*", (req, res, next) => {
+app.use((req, res, next) => {
 
   if (req.path.startsWith("/api/")) {
     return next();
