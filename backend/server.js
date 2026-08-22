@@ -82,7 +82,7 @@ app.get("/api/health", (req, res) => {
 });
 
 /* =========================================================
-   GEMINI AI
+   GEMINI REQUEST
 ========================================================= */
 
 async function askAI({
@@ -135,9 +135,14 @@ async function askAI({
     ]
   });
 
+  /*
+   * النموذج الأساسي مأخوذ من إعداد AI_MODEL،
+   * وإذا لم يكن موجودًا نستخدم النموذج الذي طلبه
+   * الخطأ الذي ظهر عندك.
+   */
+
   const models = [
-    process.env.AI_MODEL || "gemini-2.5-flash",
-    "gemini-2.5-flash-lite"
+    process.env.AI_MODEL || "gemini-3.6-flash"
   ];
 
   let lastError = null;
@@ -146,24 +151,30 @@ async function askAI({
     try {
       console.log(`Trying Gemini model: ${model}`);
 
-      const response = await ai.models.generateContent({
-        model,
-        contents,
+      const response =
+        await ai.models.generateContent({
+          model,
+          contents,
 
-        config: {
-          systemInstruction:
-            instructions ||
-            "You are Lunex, a professional AI coding assistant.",
+          config: {
+            systemInstruction:
+              instructions ||
+              "You are Lunex, a professional AI coding assistant.",
 
-          maxOutputTokens:
-            Number(process.env.AI_MAX_TOKENS) || 5000
-        }
-      });
+            maxOutputTokens:
+              Number(
+                process.env.AI_MAX_TOKENS
+              ) || 5000
+          }
+        });
 
       const text = response?.text;
 
       if (text && text.trim()) {
-        console.log(`Gemini success: ${model}`);
+        console.log(
+          `Gemini success: ${model}`
+        );
+
         return text;
       }
 
@@ -185,6 +196,10 @@ async function askAI({
         error?.message || error
       );
 
+      /*
+       * أخطاء مؤقتة.
+       */
+
       if (
         status === 503 ||
         status === 429 ||
@@ -194,18 +209,23 @@ async function askAI({
         continue;
       }
 
+      /*
+       * 404 / invalid model / invalid key
+       * نرجع الخطأ الحقيقي بدل نخفيه.
+       */
+
       throw error;
     }
   }
 
   throw new Error(
     lastError?.message ||
-    "جميع نماذج Gemini المتاحة مشغولة حاليًا. حاول مرة أخرى."
+    "تعذر استخدام نموذج Gemini حاليًا."
   );
 }
 
 /* =========================================================
-   CHAT
+   GENERAL CHAT
 ========================================================= */
 
 app.post(
@@ -282,7 +302,10 @@ app.post(
       });
 
     } catch (error) {
-      console.error("CHAT ERROR:", error);
+      console.error(
+        "CHAT ERROR:",
+        error
+      );
 
       res.status(500).json({
         ok: false,
@@ -295,7 +318,7 @@ app.post(
 );
 
 /* =========================================================
-   LUAU ANALYZER
+   LUAU CODE ANALYZER
 ========================================================= */
 
 app.post(
@@ -490,48 +513,62 @@ ${request}
    FRONTEND
 ========================================================= */
 
-const frontendPath = path.join(
-  __dirname,
-  "..",
-  "frontend"
-);
+const frontendPath =
+  path.join(
+    __dirname,
+    "..",
+    "frontend"
+  );
 
 app.use(
   express.static(frontendPath)
 );
 
-app.use((req, res, next) => {
-  if (
-    req.method !== "GET" ||
-    req.path.startsWith("/api/")
-  ) {
-    return next();
-  }
+/*
+ * لا تستخدم app.get("*")
+ * لأن Express 5 يسبب مشكلة
+ * Missing parameter name.
+ */
 
-  res.sendFile(
-    path.join(
-      frontendPath,
-      "index.html"
-    )
-  );
-});
+app.use(
+  (req, res, next) => {
+    if (
+      req.method !== "GET" ||
+      req.path.startsWith("/api/")
+    ) {
+      return next();
+    }
+
+    res.sendFile(
+      path.join(
+        frontendPath,
+        "index.html"
+      )
+    );
+  }
+);
 
 /* =========================================================
    404
 ========================================================= */
 
-app.use((req, res) => {
-  if (req.path.startsWith("/api/")) {
-    return res.status(404).json({
-      ok: false,
-      error: "API endpoint not found."
-    });
-  }
+app.use(
+  (req, res) => {
+    if (
+      req.path.startsWith("/api/")
+    ) {
+      return res.status(404).json({
+        ok: false,
+        error:
+          "API endpoint not found."
+      });
+    }
 
-  res.status(404).send(
-    "Lunex page not found."
-  );
-});
+    res.status(404).send(
+      "Lunex page not found."
+    );
+  }
+);
 
 /* =========================================================
    ERROR HANDLER
@@ -570,6 +607,13 @@ app.listen(
 
     console.log(
       `Gemini configured: ${Boolean(ai)}`
+    );
+
+    console.log(
+      `Gemini model: ${
+        process.env.AI_MODEL ||
+        "gemini-3.6-flash"
+      }`
     );
   }
 );
