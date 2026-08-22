@@ -3,14 +3,16 @@
 const express = require("express");
 const path = require("path");
 
+const rateLimit = require("./rateLimit");
+const { askAI } = require("./ai");
+
 const app = express();
 
 const PORT = process.env.PORT || 3000;
-
 const FRONTEND_DIR = path.join(__dirname, "..", "frontend");
 
 /* =========================================================
-   SECURITY / LIMITS
+   SECURITY
 ========================================================= */
 
 app.disable("x-powered-by");
@@ -36,7 +38,7 @@ app.use(
 );
 
 /* =========================================================
-   HEALTH CHECK
+   HEALTH
 ========================================================= */
 
 app.get("/api/health", (req, res) => {
@@ -51,7 +53,7 @@ app.get("/api/health", (req, res) => {
    CHAT
 ========================================================= */
 
-app.post("/api/chat", async (req, res) => {
+app.post("/api/chat", rateLimit, async (req, res) => {
 
   try {
 
@@ -72,30 +74,33 @@ app.post("/api/chat", async (req, res) => {
       });
     }
 
-    /*
-      هنا سنضع اتصال مزود الذكاء الاصطناعي لاحقًا.
+    const history =
+      Array.isArray(req.body?.history)
+        ? req.body.history
+        : [];
 
-      مهم:
-      لا تضع API key هنا بشكل مباشر.
-
-      استخدم:
-        process.env.AI_API_KEY
-
-      والمفتاح نفسه يكون محفوظًا في
-      Render Environment Variables.
-    */
+    const reply = await askAI(
+      message,
+      history
+    );
 
     return res.json({
-      reply:
-        "Lunex جاهز. اتصال الذكاء الاصطناعي سيتم تفعيله في الخطوة التالية."
+      ok: true,
+      reply
     });
 
   } catch (error) {
 
-    console.error("[LUNEX API ERROR]", error);
+    console.error(
+      "[LUNEX CHAT ERROR]",
+      error
+    );
 
     return res.status(500).json({
-      error: "حدث خطأ داخلي في الخادم."
+      ok: false,
+      error:
+        error?.message ||
+        "حدث خطأ أثناء معالجة الطلب."
     });
 
   }
@@ -113,7 +118,10 @@ app.get("*", (req, res, next) => {
   }
 
   res.sendFile(
-    path.join(FRONTEND_DIR, "index.html")
+    path.join(
+      FRONTEND_DIR,
+      "index.html"
+    )
   );
 
 });
@@ -124,9 +132,13 @@ app.get("*", (req, res, next) => {
 
 app.use((err, req, res, next) => {
 
-  console.error("[LUNEX SERVER ERROR]", err);
+  console.error(
+    "[LUNEX SERVER ERROR]",
+    err
+  );
 
   res.status(500).json({
+    ok: false,
     error: "حدث خطأ غير متوقع."
   });
 
@@ -136,15 +148,34 @@ app.use((err, req, res, next) => {
    START
 ========================================================= */
 
-app.listen(PORT, "0.0.0.0", () => {
+app.listen(
+  PORT,
+  "0.0.0.0",
+  () => {
 
-  console.log("");
-  console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-  console.log("        LUNEX ENGINE");
-  console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-  console.log(`Server: http://0.0.0.0:${PORT}`);
-  console.log("Status: ONLINE");
-  console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-  console.log("");
+    console.log("");
+    console.log(
+      "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    );
+    console.log(
+      "          LUNEX ENGINE"
+    );
+    console.log(
+      "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    );
+    console.log(
+      `Server running on port ${PORT}`
+    );
+    console.log(
+      "AI engine: CONNECTED"
+    );
+    console.log(
+      "Security: ENABLED"
+    );
+    console.log(
+      "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    );
+    console.log("");
 
-});
+  }
+);
