@@ -1,59 +1,43 @@
 "use strict";
 
-const path = require("path");
 const express = require("express");
-const cors = require("cors");
-const helmet = require("helmet");
-const rateLimit = require("express-rate-limit");
+const path = require("path");
 
 const app = express();
 
 const PORT = process.env.PORT || 3000;
-const FRONTEND_DIR = path.join(__dirname, "../frontend");
 
-/* =========================
-   Security
-========================= */
+const FRONTEND_DIR = path.join(__dirname, "..", "frontend");
+
+/* =========================================================
+   SECURITY / LIMITS
+========================================================= */
 
 app.disable("x-powered-by");
 
+app.use(express.json({
+  limit: "1mb"
+}));
+
+app.use(express.urlencoded({
+  extended: false,
+  limit: "1mb"
+}));
+
+/* =========================================================
+   FRONTEND
+========================================================= */
+
 app.use(
-  helmet({
-    contentSecurityPolicy: false
+  express.static(FRONTEND_DIR, {
+    extensions: ["html"],
+    maxAge: "1h"
   })
 );
 
-app.use(
-  cors({
-    origin: true,
-    methods: ["GET", "POST"],
-    allowedHeaders: ["Content-Type"]
-  })
-);
-
-app.use(
-  express.json({
-    limit: "1mb"
-  })
-);
-
-/* =========================
-   Rate Limit
-========================= */
-
-const apiLimiter = rateLimit({
-  windowMs: 60 * 1000,
-  max: 30,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: {
-    error: "طلبات كثيرة. حاول مرة ثانية بعد قليل."
-  }
-});
-
-/* =========================
-   Health Check
-========================= */
+/* =========================================================
+   HEALTH CHECK
+========================================================= */
 
 app.get("/api/health", (req, res) => {
   res.json({
@@ -63,12 +47,14 @@ app.get("/api/health", (req, res) => {
   });
 });
 
-/* =========================
-   AI Endpoint
-========================= */
+/* =========================================================
+   CHAT
+========================================================= */
 
-app.post("/api/chat", apiLimiter, async (req, res) => {
+app.post("/api/chat", async (req, res) => {
+
   try {
+
     const message =
       typeof req.body?.message === "string"
         ? req.body.message.trim()
@@ -76,7 +62,7 @@ app.post("/api/chat", apiLimiter, async (req, res) => {
 
     if (!message) {
       return res.status(400).json({
-        error: "اكتب رسالتك أولًا."
+        error: "اكتب رسالة أولًا."
       });
     }
 
@@ -87,43 +73,78 @@ app.post("/api/chat", apiLimiter, async (req, res) => {
     }
 
     /*
-      لاحقًا هنا نربط AI Engine الحقيقي.
-      API Key لن يكون في GitHub.
-      سيكون Environment Variable في Render.
+      هنا سنضع اتصال مزود الذكاء الاصطناعي لاحقًا.
+
+      مهم:
+      لا تضع API key هنا بشكل مباشر.
+
+      استخدم:
+        process.env.AI_API_KEY
+
+      والمفتاح نفسه يكون محفوظًا في
+      Render Environment Variables.
     */
 
     return res.json({
-      ok: true,
       reply:
-        "Lunex جاهز. محرك الذكاء الاصطناعي سيتم ربطه في المرحلة التالية."
+        "Lunex جاهز. اتصال الذكاء الاصطناعي سيتم تفعيله في الخطوة التالية."
     });
+
   } catch (error) {
-    console.error("CHAT_ERROR:", error);
+
+    console.error("[LUNEX API ERROR]", error);
 
     return res.status(500).json({
       error: "حدث خطأ داخلي في الخادم."
     });
+
   }
+
 });
 
-/* =========================
-   Static Frontend
-========================= */
+/* =========================================================
+   SPA FALLBACK
+========================================================= */
 
-app.use(express.static(FRONTEND_DIR));
+app.get("*", (req, res, next) => {
 
-/* =========================
-   Frontend Fallback
-========================= */
+  if (req.path.startsWith("/api/")) {
+    return next();
+  }
 
-app.get("*", (req, res) => {
-  res.sendFile(path.join(FRONTEND_DIR, "index.html"));
+  res.sendFile(
+    path.join(FRONTEND_DIR, "index.html")
+  );
+
 });
 
-/* =========================
-   Start
-========================= */
+/* =========================================================
+   ERROR HANDLER
+========================================================= */
+
+app.use((err, req, res, next) => {
+
+  console.error("[LUNEX SERVER ERROR]", err);
+
+  res.status(500).json({
+    error: "حدث خطأ غير متوقع."
+  });
+
+});
+
+/* =========================================================
+   START
+========================================================= */
 
 app.listen(PORT, "0.0.0.0", () => {
-  console.log(`Lunex running on port ${PORT}`);
+
+  console.log("");
+  console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+  console.log("        LUNEX ENGINE");
+  console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+  console.log(`Server: http://0.0.0.0:${PORT}`);
+  console.log("Status: ONLINE");
+  console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+  console.log("");
+
 });
