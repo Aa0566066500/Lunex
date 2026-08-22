@@ -39,17 +39,15 @@ app.use(
   })
 );
 
-/* =========================================================
-   RATE LIMIT
-========================================================= */
-
 app.use("/api", apiLimiter);
 
 /* =========================================================
    GEMINI
 ========================================================= */
 
-const apiKey = (process.env.AI_API_KEY || "").trim();
+const apiKey = (
+  process.env.AI_API_KEY || ""
+).trim();
 
 const ai = apiKey
   ? new GoogleGenAI({
@@ -61,7 +59,8 @@ function requireApiKey(req, res, next) {
   if (!ai) {
     return res.status(500).json({
       ok: false,
-      error: "AI_API_KEY is not configured on the server."
+      error:
+        "AI_API_KEY is not configured on the server."
     });
   }
 
@@ -69,192 +68,18 @@ function requireApiKey(req, res, next) {
 }
 
 /* =========================================================
-   HEALTH
+   MODEL
 ========================================================= */
 
-app.get("/api/health", (req, res) => {
-  res.json({
-    ok: true,
-    name: "Lunex",
-    status: "online",
-    aiConfigured: Boolean(ai)
-  });
-});
+const MODEL =
+  process.env.AI_MODEL ||
+  "gemini-3.6-flash";
 
 /* =========================================================
-   GEMINI REQUEST
+   LUNEX SYSTEM PROMPT
 ========================================================= */
 
-async function askAI({
-  message,
-  history = [],
-  instructions
-}) {
-  if (!ai) {
-    throw new Error(
-      "AI_API_KEY is not configured on the server."
-    );
-  }
-
-  const contents = [];
-
-  for (const item of history) {
-    if (
-      !item ||
-      !["user", "assistant", "model"].includes(item.role)
-    ) {
-      continue;
-    }
-
-    if (
-      typeof item.content !== "string" ||
-      !item.content.trim()
-    ) {
-      continue;
-    }
-
-    contents.push({
-      role:
-        item.role === "assistant"
-          ? "model"
-          : "user",
-      parts: [
-        {
-          text: item.content.slice(0, 20000)
-        }
-      ]
-    });
-  }
-
-  contents.push({
-    role: "user",
-    parts: [
-      {
-        text: message.slice(0, 50000)
-      }
-    ]
-  });
-
-  /*
-   * النموذج الأساسي مأخوذ من إعداد AI_MODEL،
-   * وإذا لم يكن موجودًا نستخدم النموذج الذي طلبه
-   * الخطأ الذي ظهر عندك.
-   */
-
-  const models = [
-    process.env.AI_MODEL || "gemini-3.6-flash"
-  ];
-
-  let lastError = null;
-
-  for (const model of models) {
-    try {
-      console.log(`Trying Gemini model: ${model}`);
-
-      const response =
-        await ai.models.generateContent({
-          model,
-          contents,
-
-          config: {
-            systemInstruction:
-              instructions ||
-              "You are Lunex, a professional AI coding assistant.",
-
-            maxOutputTokens:
-              Number(
-                process.env.AI_MAX_TOKENS
-              ) || 5000
-          }
-        });
-
-      const text = response?.text;
-
-      if (text && text.trim()) {
-        console.log(
-          `Gemini success: ${model}`
-        );
-
-        return text;
-      }
-
-      throw new Error(
-        `Model ${model} returned an empty response.`
-      );
-
-    } catch (error) {
-      lastError = error;
-
-      const status =
-        error?.status ||
-        error?.code ||
-        error?.response?.status;
-
-      console.error(
-        `Gemini model failed: ${model}`,
-        status,
-        error?.message || error
-      );
-
-      /*
-       * أخطاء مؤقتة.
-       */
-
-      if (
-        status === 503 ||
-        status === 429 ||
-        status === 500 ||
-        status === "UNAVAILABLE"
-      ) {
-        continue;
-      }
-
-      /*
-       * 404 / invalid model / invalid key
-       * نرجع الخطأ الحقيقي بدل نخفيه.
-       */
-
-      throw error;
-    }
-  }
-
-  throw new Error(
-    lastError?.message ||
-    "تعذر استخدام نموذج Gemini حاليًا."
-  );
-}
-
-/* =========================================================
-   GENERAL CHAT
-========================================================= */
-
-app.post(
-  "/api/chat",
-  requireApiKey,
-  async (req, res) => {
-    try {
-      const message =
-        typeof req.body?.message === "string"
-          ? req.body.message.trim()
-          : "";
-
-      const history =
-        Array.isArray(req.body?.history)
-          ? req.body.history
-          : [];
-
-      if (!message) {
-        return res.status(400).json({
-          ok: false,
-          error: "الرسالة فارغة."
-        });
-      }
-
-      const reply = await askAI({
-        message,
-        history,
-
-        instructions: `
+const LUNEX_INSTRUCTIONS = `
 أنت Lunex، مساعد برمجة احترافي جدًا.
 
 تخصصك الأساسي:
@@ -279,9 +104,9 @@ app.post(
 - Roblox Security
 - Game Development
 
-قواعدك:
+القواعد:
 
-1. افهم السؤال قبل الإجابة.
+1. افهم السؤال قبل الإججابة.
 2. لا تخترع API غير موجودة.
 3. عند كتابة Luau اجعله مناسبًا لـ Roblox Studio.
 4. وضح مكان وضع الكود إذا كان ذلك مهمًا.
@@ -293,8 +118,325 @@ app.post(
 10. عندما يكتب المستخدم بالعربية، أجب بالعربية.
 11. كن عمليًا ودقيقًا.
 12. عند إعطاء كود، اجعله كاملًا وقابلًا للنسخ قدر الإمكان.
-`
+13. استخدم Markdown code fences للكود، مثل:
+\`\`\`lua
+الكود
+\`\`\`
+14. لا تضع الكود خارج code fence إذا كان المقصود نسخه.
+`;
+
+/* =========================================================
+   BUILD CONTENTS
+========================================================= */
+
+function buildContents({
+  message,
+  history = []
+}) {
+  const contents = [];
+
+  for (const item of history) {
+    if (
+      !item ||
+      !["user", "assistant", "model"].includes(
+        item.role
+      )
+    ) {
+      continue;
+    }
+
+    if (
+      typeof item.content !== "string" ||
+      !item.content.trim()
+    ) {
+      continue;
+    }
+
+    contents.push({
+      role:
+        item.role === "assistant"
+          ? "model"
+          : "user",
+
+      parts: [
+        {
+          text: item.content.slice(0, 20000)
+        }
+      ]
+    });
+  }
+
+  contents.push({
+    role: "user",
+
+    parts: [
+      {
+        text: message.slice(0, 50000)
+      }
+    ]
+  });
+
+  return contents;
+}
+
+/* =========================================================
+   NORMAL AI REQUEST
+========================================================= */
+
+async function askAI({
+  message,
+  history = [],
+  instructions
+}) {
+  if (!ai) {
+    throw new Error(
+      "AI_API_KEY is not configured on the server."
+    );
+  }
+
+  const contents = buildContents({
+    message,
+    history
+  });
+
+  const response =
+    await ai.models.generateContent({
+      model: MODEL,
+
+      contents,
+
+      config: {
+        systemInstruction:
+          instructions ||
+          LUNEX_INSTRUCTIONS,
+
+        maxOutputTokens:
+          Number(
+            process.env.AI_MAX_TOKENS
+          ) || 5000
+      }
+    });
+
+  const text =
+    response?.text || "";
+
+  if (!text.trim()) {
+    throw new Error(
+      "Gemini returned an empty response."
+    );
+  }
+
+  return text;
+}
+
+/* =========================================================
+   STREAM CHAT
+========================================================= */
+
+app.post(
+  "/api/chat/stream",
+  requireApiKey,
+  async (req, res) => {
+    try {
+      const message =
+        typeof req.body?.message === "string"
+          ? req.body.message.trim()
+          : "";
+
+      const history =
+        Array.isArray(req.body?.history)
+          ? req.body.history
+          : [];
+
+      if (!message) {
+        return res.status(400).json({
+          ok: false,
+          error: "الرسالة فارغة."
+        });
+      }
+
+      const contents =
+        buildContents({
+          message,
+          history
+        });
+
+      /*
+       * SSE
+       */
+
+      res.status(200);
+
+      res.setHeader(
+        "Content-Type",
+        "text/event-stream; charset=utf-8"
+      );
+
+      res.setHeader(
+        "Cache-Control",
+        "no-cache, no-transform"
+      );
+
+      res.setHeader(
+        "Connection",
+        "keep-alive"
+      );
+
+      res.setHeader(
+        "X-Accel-Buffering",
+        "no"
+      );
+
+      if (res.flushHeaders) {
+        res.flushHeaders();
+      }
+
+      const sendEvent = (
+        type,
+        data
+      ) => {
+        res.write(
+          `event: ${type}\n`
+        );
+
+        res.write(
+          `data: ${JSON.stringify(
+            data
+          )}\n\n`
+        );
+      };
+
+      sendEvent("start", {
+        model: MODEL
       });
+
+      console.log(
+        "Starting Gemini stream:",
+        MODEL
+      );
+
+      const stream =
+        await ai.models.generateContentStream({
+          model: MODEL,
+
+          contents,
+
+          config: {
+            systemInstruction:
+              LUNEX_INSTRUCTIONS,
+
+            maxOutputTokens:
+              Number(
+                process.env.AI_MAX_TOKENS
+              ) || 5000
+          }
+        });
+
+      let fullText = "";
+
+      for await (
+        const chunk of stream
+      ) {
+        const text =
+          typeof chunk?.text ===
+          "string"
+            ? chunk.text
+            : "";
+
+        if (!text) {
+          continue;
+        }
+
+        fullText += text;
+
+        sendEvent("chunk", {
+          text
+        });
+      }
+
+      sendEvent("done", {
+        text: fullText
+      });
+
+      res.end();
+
+      console.log(
+        "Gemini stream completed."
+      );
+
+    } catch (error) {
+      console.error(
+        "STREAM CHAT ERROR:",
+        error
+      );
+
+      /*
+       * إذا ما زلنا نقدر نرسل SSE،
+       * أرسل الخطأ للواجهة.
+       */
+
+      try {
+        res.write(
+          `event: error\n`
+        );
+
+        res.write(
+          `data: ${JSON.stringify({
+            error:
+              error?.message ||
+              "تعذر إكمال الطلب."
+          })}\n\n`
+        );
+
+        res.end();
+
+      } catch {
+        if (!res.headersSent) {
+          res.status(500).json({
+            ok: false,
+            error:
+              error?.message ||
+              "تعذر إكمال الطلب."
+          });
+        }
+      }
+    }
+  }
+);
+
+/* =========================================================
+   NORMAL CHAT FALLBACK
+========================================================= */
+
+app.post(
+  "/api/chat",
+  requireApiKey,
+  async (req, res) => {
+    try {
+      const message =
+        typeof req.body?.message === "string"
+          ? req.body.message.trim()
+          : "";
+
+      const history =
+        Array.isArray(req.body?.history)
+          ? req.body.history
+          : [];
+
+      if (!message) {
+        return res.status(400).json({
+          ok: false,
+          error: "الرسالة فارغة."
+        });
+      }
+
+      const reply =
+        await askAI({
+          message,
+          history,
+          instructions:
+            LUNEX_INSTRUCTIONS
+        });
 
       res.json({
         ok: true,
@@ -318,7 +460,7 @@ app.post(
 );
 
 /* =========================================================
-   LUAU CODE ANALYZER
+   LUAU ANALYZER
 ========================================================= */
 
 app.post(
@@ -338,8 +480,9 @@ app.post(
         });
       }
 
-      const report = await askAI({
-        message: `
+      const report =
+        await askAI({
+          message: `
 افحص كود Luau التالي فحصًا احترافيًا ودقيقًا جدًا.
 
 ابحث عن:
@@ -382,7 +525,7 @@ ${code.slice(0, 100000)}
 \`\`\`
 `,
 
-        instructions: `
+          instructions: `
 أنت Lunex Luau Code Analyzer.
 
 أنت متخصص في Luau وRoblox Studio.
@@ -401,7 +544,7 @@ Memory
 
 رتب النتائج بوضوح.
 `
-      });
+        });
 
       res.json({
         ok: true,
@@ -441,12 +584,14 @@ app.post(
       if (!request) {
         return res.status(400).json({
           ok: false,
-          error: "اكتب وصف التصميم أولًا."
+          error:
+            "اكتب وصف التصميم أولًا."
         });
       }
 
-      const design = await askAI({
-        message: `
+      const design =
+        await askAI({
+          message: `
 صمم واجهة احترافية بناءً على طلب المستخدم:
 
 ${request}
@@ -474,7 +619,7 @@ ${request}
 ركز على تصميم نظيف وحديث واحترافي.
 `,
 
-        instructions: `
+          instructions: `
 أنت Lunex UI Designer.
 
 متخصص في:
@@ -486,7 +631,7 @@ ${request}
 
 اجعل التصميم عمليًا وحديثًا وسهل الاستخدام.
 `
-      });
+        });
 
       res.json({
         ok: true,
@@ -523,12 +668,6 @@ const frontendPath =
 app.use(
   express.static(frontendPath)
 );
-
-/*
- * لا تستخدم app.get("*")
- * لأن Express 5 يسبب مشكلة
- * Missing parameter name.
- */
 
 app.use(
   (req, res, next) => {
@@ -571,7 +710,7 @@ app.use(
 );
 
 /* =========================================================
-   ERROR HANDLER
+   ERROR
 ========================================================= */
 
 app.use(
@@ -610,10 +749,7 @@ app.listen(
     );
 
     console.log(
-      `Gemini model: ${
-        process.env.AI_MODEL ||
-        "gemini-3.6-flash"
-      }`
+      `Gemini model: ${MODEL}`
     );
   }
 );
