@@ -1,52 +1,27 @@
 "use strict";
 
-const requests = new Map();
+const rateLimit = require("express-rate-limit");
 
-const WINDOW_MS = 60 * 1000;
-const MAX_REQUESTS = 20;
+/*
+ * حماية عامة للـ API
+ * تمنع إرسال عدد ضخم من الطلبات خلال وقت قصير.
+ */
 
-function getClientKey(req) {
-  return (
-    req.headers["x-forwarded-for"]?.split(",")[0]?.trim() ||
-    req.socket.remoteAddress ||
-    "unknown"
-  );
-}
+const apiLimiter = rateLimit({
+  windowMs: 60 * 1000,
 
-function rateLimit(req, res, next) {
-  const key = getClientKey(req);
-  const now = Date.now();
+  max: 30,
 
-  const current = requests.get(key);
+  standardHeaders: true,
 
-  if (!current || now - current.start >= WINDOW_MS) {
-    requests.set(key, {
-      start: now,
-      count: 1
-    });
+  legacyHeaders: false,
 
-    return next();
+  message: {
+    ok: false,
+    error: "طلبات كثيرة. انتظر قليلًا ثم حاول مرة أخرى."
   }
+});
 
-  current.count++;
-
-  if (current.count > MAX_REQUESTS) {
-    return res.status(429).json({
-      error: "طلبات كثيرة. حاول مرة أخرى بعد قليل."
-    });
-  }
-
-  next();
-}
-
-setInterval(() => {
-  const now = Date.now();
-
-  for (const [key, value] of requests) {
-    if (now - value.start >= WINDOW_MS) {
-      requests.delete(key);
-    }
-  }
-}, WINDOW_MS).unref();
-
-module.exports = rateLimit;
+module.exports = {
+  apiLimiter
+};
