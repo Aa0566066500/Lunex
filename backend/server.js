@@ -53,7 +53,7 @@ const apiKey = (process.env.AI_API_KEY || "").trim();
 
 const ai = apiKey
   ? new GoogleGenAI({
-      apiKey: apiKey
+      apiKey
     })
   : null;
 
@@ -82,7 +82,7 @@ app.get("/api/health", (req, res) => {
 });
 
 /* =========================================================
-   GEMINI REQUEST
+   GEMINI AI
 ========================================================= */
 
 async function askAI({
@@ -135,26 +135,72 @@ async function askAI({
     ]
   });
 
-  const response = await ai.models.generateContent({
-    model:
-      process.env.AI_MODEL ||
-      "gemini-3.7-flash",
+  const models = [
+    process.env.AI_MODEL || "gemini-2.5-flash",
+    "gemini-2.5-flash-lite"
+  ];
 
-    contents,
+  let lastError = null;
 
-    config: {
-      systemInstruction:
-        instructions ||
-        "You are Lunex, a professional AI coding assistant.",
+  for (const model of models) {
+    try {
+      console.log(`Trying Gemini model: ${model}`);
 
-      maxOutputTokens:
-        Number(process.env.AI_MAX_TOKENS) || 5000
+      const response = await ai.models.generateContent({
+        model,
+        contents,
+
+        config: {
+          systemInstruction:
+            instructions ||
+            "You are Lunex, a professional AI coding assistant.",
+
+          maxOutputTokens:
+            Number(process.env.AI_MAX_TOKENS) || 5000
+        }
+      });
+
+      const text = response?.text;
+
+      if (text && text.trim()) {
+        console.log(`Gemini success: ${model}`);
+        return text;
+      }
+
+      throw new Error(
+        `Model ${model} returned an empty response.`
+      );
+
+    } catch (error) {
+      lastError = error;
+
+      const status =
+        error?.status ||
+        error?.code ||
+        error?.response?.status;
+
+      console.error(
+        `Gemini model failed: ${model}`,
+        status,
+        error?.message || error
+      );
+
+      if (
+        status === 503 ||
+        status === 429 ||
+        status === 500 ||
+        status === "UNAVAILABLE"
+      ) {
+        continue;
+      }
+
+      throw error;
     }
-  });
+  }
 
-  return (
-    response.text ||
-    "لم يرجع الذكاء الاصطناعي نتيجة."
+  throw new Error(
+    lastError?.message ||
+    "جميع نماذج Gemini المتاحة مشغولة حاليًا. حاول مرة أخرى."
   );
 }
 
@@ -222,10 +268,11 @@ app.post(
 5. فرّق بين Script و LocalScript و ModuleScript.
 6. انتبه لأمان RemoteEvents.
 7. حلل الأخطاء بدل إعطاء حلول عشوائية.
-8. إذا كان هناك حل أفضل، اذكره.
+8. إذا كان هناك حل أفضل، اقترحه.
 9. لا تكشف أسرار الخادم أو API keys.
-10. المستخدم عربي، لذلك أجب بالعربية عند استخدام العربية.
+10. عندما يكتب المستخدم بالعربية، أجب بالعربية.
 11. كن عمليًا ودقيقًا.
+12. عند إعطاء كود، اجعله كاملًا وقابلًا للنسخ قدر الإمكان.
 `
       });
 
@@ -233,6 +280,7 @@ app.post(
         ok: true,
         reply
       });
+
     } catch (error) {
       console.error("CHAT ERROR:", error);
 
@@ -336,6 +384,7 @@ Memory
         ok: true,
         report
       });
+
     } catch (error) {
       console.error(
         "ANALYZER ERROR:",
@@ -396,7 +445,7 @@ ${request}
 - الكمبيوتر
 - تجربة المستخدم
 
-إذا كانت الواجهة لـ Roblox Studio
+إذا كانت الواجهة لـ Roblox Studio،
 اجعل التصميم مناسبًا لـ Roblox UI.
 
 ركز على تصميم نظيف وحديث واحترافي.
@@ -420,6 +469,7 @@ ${request}
         ok: true,
         design
       });
+
     } catch (error) {
       console.error(
         "UI DESIGN ERROR:",
@@ -449,12 +499,6 @@ const frontendPath = path.join(
 app.use(
   express.static(frontendPath)
 );
-
-/*
- * لا تستخدم app.get("*")
- * لأن Express 5 يسبب مشكلة
- * Missing parameter name.
- */
 
 app.use((req, res, next) => {
   if (
