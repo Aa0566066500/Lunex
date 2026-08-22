@@ -1,6 +1,10 @@
 "use strict";
 
 /* =========================================================
+   LUNEX APP
+========================================================= */
+
+/* =========================================================
    STATE
 ========================================================= */
 
@@ -11,6 +15,10 @@ let currentConversationId = null;
 let currentProjectId = null;
 
 let isSending = false;
+
+let selectedFiles = [];
+
+let latestErrorReport = "";
 
 /* =========================================================
    ELEMENTS
@@ -35,22 +43,16 @@ const attachButton =
   document.getElementById("attachButton");
 
 const attachmentPreview =
-  document.getElementById(
-    "attachmentPreview"
-  );
+  document.getElementById("attachmentPreview");
 
 const conversationList =
-  document.getElementById(
-    "conversationList"
-  );
+  document.getElementById("conversationList");
 
 const newChatButton =
-  document.getElementById(
-    "newChatButton"
-  );
+  document.getElementById("newChatButton");
 
 /* =========================================================
-   SVG ICONS
+   SVG
 ========================================================= */
 
 const COPY_ICON = `
@@ -61,6 +63,7 @@ const COPY_ICON = `
   stroke-width="1.8"
   stroke-linecap="round"
   stroke-linejoin="round"
+  aria-hidden="true"
 >
   <rect
     x="8"
@@ -84,6 +87,7 @@ const CHECK_ICON = `
   stroke-width="2"
   stroke-linecap="round"
   stroke-linejoin="round"
+  aria-hidden="true"
 >
   <path d="m5 12 4 4L19 6"></path>
 </svg>
@@ -95,40 +99,63 @@ const CHECK_ICON = `
 
 function loadStorage() {
   try {
-    conversations =
-      JSON.parse(
-        localStorage.getItem(
-          "lunex_conversations"
-        ) || "[]"
+    const savedConversations =
+      localStorage.getItem(
+        "lunex_conversations"
       );
+
+    const savedProjects =
+      localStorage.getItem(
+        "lunex_projects"
+      );
+
+    conversations =
+      savedConversations
+        ? JSON.parse(savedConversations)
+        : [];
 
     projects =
-      JSON.parse(
-        localStorage.getItem(
-          "lunex_projects"
-        ) || "[]"
-      );
+      savedProjects
+        ? JSON.parse(savedProjects)
+        : [];
 
-  } catch {
+    if (!Array.isArray(conversations)) {
+      conversations = [];
+    }
+
+    if (!Array.isArray(projects)) {
+      projects = [];
+    }
+
+  } catch (error) {
+    console.error(
+      "Storage load error:",
+      error
+    );
+
     conversations = [];
     projects = [];
   }
 }
 
 function saveStorage() {
-  localStorage.setItem(
-    "lunex_conversations",
-    JSON.stringify(
-      conversations
-    )
-  );
+  try {
+    localStorage.setItem(
+      "lunex_conversations",
+      JSON.stringify(conversations)
+    );
 
-  localStorage.setItem(
-    "lunex_projects",
-    JSON.stringify(
-      projects
-    )
-  );
+    localStorage.setItem(
+      "lunex_projects",
+      JSON.stringify(projects)
+    );
+
+  } catch (error) {
+    console.error(
+      "Storage save error:",
+      error
+    );
+  }
 }
 
 /* =========================================================
@@ -143,7 +170,7 @@ function createId(prefix) {
     "_" +
     Math.random()
       .toString(36)
-      .slice(2, 9)
+      .slice(2, 10)
   );
 }
 
@@ -156,11 +183,34 @@ function escapeHTML(value) {
     .replaceAll("'", "&#039;");
 }
 
+function sleep(ms) {
+  return new Promise(
+    (resolve) =>
+      setTimeout(resolve, ms)
+  );
+}
+
 function scrollChat() {
   if (!chatMessages) return;
 
   chatMessages.scrollTop =
     chatMessages.scrollHeight;
+}
+
+function getCurrentConversation() {
+  return conversations.find(
+    (conversation) =>
+      conversation.id ===
+      currentConversationId
+  );
+}
+
+function getCurrentProject() {
+  return projects.find(
+    (project) =>
+      project.id ===
+      currentProjectId
+  );
 }
 
 /* =========================================================
@@ -171,9 +221,7 @@ function showPage(pageName) {
   document
     .querySelectorAll(".page")
     .forEach((page) => {
-      page.classList.remove(
-        "active"
-      );
+      page.classList.remove("active");
     });
 
   const page =
@@ -182,13 +230,13 @@ function showPage(pageName) {
     );
 
   if (page) {
-    page.classList.add(
-      "active"
-    );
+    page.classList.add("active");
   }
 
   document
-    .querySelectorAll(".nav-item[data-page]")
+    .querySelectorAll(
+      ".nav-item[data-page]"
+    )
     .forEach((item) => {
       item.classList.toggle(
         "active",
@@ -215,7 +263,13 @@ function showPage(pageName) {
       titles[pageName] ||
       "Lunex";
   }
+
+  closeSidebar();
 }
+
+/* =========================================================
+   NAV BUTTONS
+========================================================= */
 
 document
   .querySelectorAll(
@@ -225,9 +279,14 @@ document
     button.addEventListener(
       "click",
       () => {
-        showPage(
-          button.dataset.page
-        );
+        const page =
+          button.dataset.page;
+
+        if (page === "projects") {
+          renderProjects();
+        }
+
+        showPage(page);
       }
     );
   });
@@ -239,9 +298,14 @@ document
 function createNewChat() {
   const conversation = {
     id: createId("chat"),
-    title: "محادثة جديدة",
+
+    title:
+      "محادثة جديدة",
+
     messages: [],
-    createdAt: Date.now()
+
+    createdAt:
+      Date.now()
   };
 
   conversations.unshift(
@@ -254,11 +318,17 @@ function createNewChat() {
   saveStorage();
 
   renderConversationList();
+
   renderCurrentConversation();
 
   showPage("chat");
 
-  messageInput?.focus();
+  setTimeout(
+    () => {
+      messageInput?.focus();
+    },
+    50
+  );
 }
 
 newChatButton?.addEventListener(
@@ -267,7 +337,7 @@ newChatButton?.addEventListener(
 );
 
 /* =========================================================
-   CONVERSATION LIST
+   CONVERSATIONS
 ========================================================= */
 
 function renderConversationList() {
@@ -275,12 +345,18 @@ function renderConversationList() {
 
   conversationList.innerHTML = "";
 
+  if (!conversations.length) {
+    return;
+  }
+
   conversations.forEach(
     (conversation) => {
       const button =
         document.createElement(
           "button"
         );
+
+      button.type = "button";
 
       button.className =
         "conversation-item";
@@ -305,6 +381,7 @@ function renderConversationList() {
             conversation.id;
 
           renderConversationList();
+
           renderCurrentConversation();
 
           showPage("chat");
@@ -322,14 +399,6 @@ function renderConversationList() {
    CURRENT CHAT
 ========================================================= */
 
-function getCurrentConversation() {
-  return conversations.find(
-    (item) =>
-      item.id ===
-      currentConversationId
-  );
-}
-
 function renderCurrentConversation() {
   if (!chatMessages) return;
 
@@ -340,6 +409,9 @@ function renderCurrentConversation() {
 
   if (
     !conversation ||
+    !Array.isArray(
+      conversation.messages
+    ) ||
     !conversation.messages.length
   ) {
     chatMessages.innerHTML = `
@@ -430,23 +502,26 @@ function renderStoredMessage(
 }
 
 /* =========================================================
-   PARSE AI RESPONSE
+   MARKDOWN / CODE PARSER
 ========================================================= */
 
 function parseResponse(text) {
   const blocks = [];
 
+  const source =
+    String(text || "");
+
   const regex =
-    /```([a-zA-Z0-9_+-]*)\n?([\s\S]*?)```/g;
+    /```([a-zA-Z0-9_+#.-]*)[ \t]*\n?([\s\S]*?)```/g;
 
   let lastIndex = 0;
   let match;
 
   while (
-    (match = regex.exec(text))
+    (match = regex.exec(source))
   ) {
     const before =
-      text.slice(
+      source.slice(
         lastIndex,
         match.index
       );
@@ -460,9 +535,11 @@ function parseResponse(text) {
 
     blocks.push({
       type: "code",
+
       language:
         match[1] ||
         "lua",
+
       code:
         match[2].replace(
           /^\n+|\n+$/g,
@@ -475,7 +552,7 @@ function parseResponse(text) {
   }
 
   const remaining =
-    text.slice(lastIndex);
+    source.slice(lastIndex);
 
   if (remaining.trim()) {
     blocks.push({
@@ -487,7 +564,7 @@ function parseResponse(text) {
   if (!blocks.length) {
     blocks.push({
       type: "text",
-      content: text
+      content: source
     });
   }
 
@@ -523,48 +600,153 @@ async function renderAssistantContent(
       textElement.className =
         "lunex-text";
 
-      textElement.innerHTML =
-        escapeHTML(
-          block.content
-        ).replace(
-          /\n/g,
-          "<br>"
-        );
-
       container.appendChild(
         textElement
       );
 
+      if (animate) {
+        await typeText(
+          textElement,
+          block.content
+        );
+      } else {
+        textElement.innerHTML =
+          formatPlainText(
+            block.content
+          );
+      }
+
       continue;
     }
 
-    const codeBox =
-      createCodeBox(
-        block.code,
-        block.language
+    if (
+      block.type ===
+      "code"
+    ) {
+      const codeBox =
+        createCodeBox(
+          block.code,
+          block.language
+        );
+
+      container.appendChild(
+        codeBox
       );
 
-    container.appendChild(
-      codeBox
-    );
+      const codeElement =
+        codeBox.querySelector(
+          "code"
+        );
 
-    const codeElement =
-      codeBox.querySelector(
-        "code"
-      );
+      if (animate) {
+        await typeCode(
+          codeElement,
+          block.code
+        );
+      } else {
+        codeElement.textContent =
+          block.code;
+      }
 
-    if (animate) {
-      await typeCode(
-        codeElement,
-        block.code
-      );
-    } else {
-      codeElement.textContent =
-        block.code;
+      scrollChat();
+    }
+  }
+}
+
+/* =========================================================
+   TEXT FORMAT
+========================================================= */
+
+function formatPlainText(
+  text
+) {
+  return escapeHTML(
+    text
+  ).replace(
+    /\n/g,
+    "<br>"
+  );
+}
+
+/* =========================================================
+   TYPE TEXT
+========================================================= */
+
+async function typeText(
+  element,
+  text
+) {
+  if (!element) return;
+
+  element.textContent = "";
+
+  const source =
+    String(text || "");
+
+  let index = 0;
+
+  /*
+   * سرعة الكتابة:
+   * النص العادي يظهر حرفًا حرفًا.
+   */
+
+  while (
+    index < source.length
+  ) {
+    let amount = 1;
+
+    /*
+     * إذا كان النص طويلًا،
+     * نسرّع قليلًا حتى لا تصبح
+     * الإجابة بطيئة جدًا.
+     */
+
+    if (
+      source.length > 8000
+    ) {
+      amount = 4;
+    } else if (
+      source.length > 4000
+    ) {
+      amount = 3;
+    } else if (
+      source.length > 1500
+    ) {
+      amount = 2;
     }
 
+    element.textContent +=
+      source.slice(
+        index,
+        index + amount
+      );
+
+    index += amount;
+
     scrollChat();
+
+    /*
+     * توقف بسيط بين الحروف.
+     */
+
+    await sleep(
+      source.length > 4000
+        ? 2
+        : 10
+    );
   }
+
+  /*
+   * بعد انتهاء الكتابة
+   * نحول الأسطر إلى HTML.
+   */
+
+  element.innerHTML =
+    formatPlainText(
+      source
+    );
+
+  scrollChat();
 }
 
 /* =========================================================
@@ -586,9 +768,12 @@ function createCodeBox(
   box.innerHTML = `
     <div class="lunex-code-header">
 
-      <span class="lunex-code-language">
+      <span
+        class="lunex-code-language"
+      >
         ${escapeHTML(
-          language || "lua"
+          language ||
+            "lua"
         )}
       </span>
 
@@ -603,7 +788,9 @@ function createCodeBox(
 
     </div>
 
-    <pre class="lunex-code-body"><code></code></pre>
+    <pre
+      class="lunex-code-body"
+    ><code></code></pre>
   `;
 
   const copyButton =
@@ -611,7 +798,7 @@ function createCodeBox(
       ".lunex-copy"
     );
 
-  copyButton.addEventListener(
+  copyButton?.addEventListener(
     "click",
     () => {
       copyCode(
@@ -636,29 +823,46 @@ async function typeCode(
 
   element.textContent = "";
 
+  const source =
+    String(code || "");
+
   let index = 0;
 
   while (
-    index < code.length
+    index < source.length
   ) {
-    let amount = 3;
+    let amount = 2;
+    let delay = 8;
+
+    /*
+     * الكود القصير:
+     * حرفين تقريبًا كل مرة.
+     */
 
     if (
-      code.length > 10000
+      source.length > 12000
+    ) {
+      amount = 30;
+      delay = 1;
+    } else if (
+      source.length > 8000
     ) {
       amount = 20;
+      delay = 2;
     } else if (
-      code.length > 5000
+      source.length > 5000
     ) {
       amount = 12;
+      delay = 3;
     } else if (
-      code.length > 2000
+      source.length > 2000
     ) {
       amount = 7;
+      delay = 5;
     }
 
     element.textContent +=
-      code.slice(
+      source.slice(
         index,
         index + amount
       );
@@ -667,14 +871,18 @@ async function typeCode(
 
     scrollChat();
 
-    await new Promise(
-      (resolve) =>
-        setTimeout(
-          resolve,
-          8
-        )
-    );
+    await sleep(delay);
   }
+
+  /*
+   * نخلي الكود كاملًا في DOM
+   * بعد انتهاء الأنيميشن.
+   */
+
+  element.textContent =
+    source;
+
+  scrollChat();
 }
 
 /* =========================================================
@@ -687,7 +895,7 @@ async function copyCode(
 ) {
   try {
     await navigator.clipboard.writeText(
-      code
+      String(code || "")
     );
 
     button.innerHTML =
@@ -711,9 +919,61 @@ async function copyCode(
 
   } catch (error) {
     console.error(
-      "Copy error:",
+      "Copy code error:",
       error
     );
+
+    /*
+     * fallback للمتصفحات
+     * التي تمنع Clipboard API.
+     */
+
+    try {
+      const textarea =
+        document.createElement(
+          "textarea"
+        );
+
+      textarea.value =
+        String(code || "");
+
+      textarea.style.position =
+        "fixed";
+
+      textarea.style.opacity =
+        "0";
+
+      document.body.appendChild(
+        textarea
+      );
+
+      textarea.select();
+
+      document.execCommand(
+        "copy"
+      );
+
+      textarea.remove();
+
+      button.innerHTML =
+        CHECK_ICON;
+
+      setTimeout(
+        () => {
+          button.innerHTML =
+            COPY_ICON;
+        },
+        1500
+      );
+
+    } catch (
+      fallbackError
+    ) {
+      console.error(
+        "Copy fallback error:",
+        fallbackError
+      );
+    }
   }
 }
 
@@ -731,17 +991,17 @@ async function sendMessage() {
 
   isSending = true;
 
-  sendButton.disabled =
-    true;
+  if (sendButton) {
+    sendButton.disabled =
+      true;
+  }
 
   /*
    * إذا ما فيه محادثة،
-   * أنشئ وحدة تلقائيًا.
+   * ننشئ محادثة.
    */
 
-  if (
-    !currentConversationId
-  ) {
+  if (!currentConversationId) {
     createNewChat();
   }
 
@@ -750,13 +1010,17 @@ async function sendMessage() {
 
   if (!conversation) {
     isSending = false;
-    sendButton.disabled =
-      false;
+
+    if (sendButton) {
+      sendButton.disabled =
+        false;
+    }
+
     return;
   }
 
   /*
-   * المستخدم
+   * إضافة رسالة المستخدم.
    */
 
   conversation.messages.push({
@@ -766,7 +1030,7 @@ async function sendMessage() {
   });
 
   /*
-   * أول رسالة تصبح اسم المحادثة.
+   * اسم المحادثة من أول رسالة.
    */
 
   if (
@@ -774,8 +1038,8 @@ async function sendMessage() {
       .length === 1
   ) {
     conversation.title =
-      text.length > 35
-        ? text.slice(0, 35) +
+      text.length > 40
+        ? text.slice(0, 40) +
           "..."
         : text;
   }
@@ -787,6 +1051,50 @@ async function sendMessage() {
   renderCurrentConversation();
 
   messageInput.value = "";
+
+  /*
+   * حذف الملفات المحددة
+   * بعد الإرسال.
+   */
+
+  selectedFiles = [];
+
+  if (fileInput) {
+    fileInput.value = "";
+  }
+
+  renderAttachmentPreview();
+
+  /*
+   * رسالة مؤقتة أثناء الاتصال.
+   */
+
+  const typingElement =
+    document.createElement(
+      "div"
+    );
+
+  typingElement.className =
+    "message assistant-message";
+
+  typingElement.innerHTML = `
+    <div class="message-content">
+      <div class="lunex-thinking">
+        <span>جاري التفكير</span>
+        <span class="thinking-dots">
+          <i></i>
+          <i></i>
+          <i></i>
+        </span>
+      </div>
+    </div>
+  `;
+
+  chatMessages.appendChild(
+    typingElement
+  );
+
+  scrollChat();
 
   try {
     const response =
@@ -802,6 +1110,7 @@ async function sendMessage() {
 
           body: JSON.stringify({
             message: text,
+
             history:
               conversation.messages
                 .slice(0, -1)
@@ -809,8 +1118,14 @@ async function sendMessage() {
         }
       );
 
-    const data =
-      await response.json();
+    let data = null;
+
+    try {
+      data =
+        await response.json();
+    } catch {
+      data = null;
+    }
 
     if (!response.ok) {
       throw new Error(
@@ -820,7 +1135,17 @@ async function sendMessage() {
     }
 
     const reply =
-      data.reply || "";
+      data?.reply || "";
+
+    /*
+     * إزالة "جاري التفكير".
+     */
+
+    typingElement.remove();
+
+    /*
+     * إضافة رد المساعد.
+     */
 
     conversation.messages.push({
       role: "assistant",
@@ -830,9 +1155,53 @@ async function sendMessage() {
 
     saveStorage();
 
-    renderCurrentConversation();
+    /*
+     * لا نستخدم renderCurrentConversation
+     * هنا لأنه سيظهر الرد كاملًا.
+     *
+     * نضيفه ونشغّل animation مباشرة.
+     */
+
+    const element =
+      document.createElement(
+        "div"
+      );
+
+    element.className =
+      "message assistant-message";
+
+    const content =
+      document.createElement(
+        "div"
+      );
+
+    content.className =
+      "message-content";
+
+    element.appendChild(
+      content
+    );
+
+    chatMessages.appendChild(
+      element
+    );
+
+    await renderAssistantContent(
+      content,
+      reply,
+      true
+    );
+
+    renderConversationList();
 
   } catch (error) {
+    console.error(
+      "CHAT ERROR:",
+      error
+    );
+
+    typingElement.remove();
+
     const errorMessage =
       error?.message ||
       "تعذر إكمال الطلب.";
@@ -847,23 +1216,29 @@ async function sendMessage() {
     saveStorage();
 
     renderCurrentConversation();
-
   } finally {
     isSending = false;
 
-    sendButton.disabled =
-      false;
+    if (sendButton) {
+      sendButton.disabled =
+        false;
+    }
 
-    messageInput.focus();
+    messageInput?.focus();
 
     scrollChat();
   }
 }
 
+/* =========================================================
+   CHAT SUBMIT
+========================================================= */
+
 chatForm?.addEventListener(
   "submit",
   (event) => {
     event.preventDefault();
+
     sendMessage();
   }
 );
@@ -900,37 +1275,75 @@ attachButton?.addEventListener(
 fileInput?.addEventListener(
   "change",
   () => {
-    const files =
+    selectedFiles =
       Array.from(
         fileInput.files || []
       );
 
-    attachmentPreview.innerHTML =
-      "";
-
-    files.forEach(
-      (file) => {
-        const item =
-          document.createElement(
-            "div"
-          );
-
-        item.className =
-          "attachment-item";
-
-        item.textContent =
-          file.name;
-
-        attachmentPreview.appendChild(
-          item
-        );
-      }
-    );
+    renderAttachmentPreview();
   }
 );
 
+function renderAttachmentPreview() {
+  if (!attachmentPreview) {
+    return;
+  }
+
+  attachmentPreview.innerHTML =
+    "";
+
+  selectedFiles.forEach(
+    (file, index) => {
+      const item =
+        document.createElement(
+          "div"
+        );
+
+      item.className =
+        "attachment-item";
+
+      item.innerHTML = `
+        <span>
+          ${escapeHTML(
+            file.name
+          )}
+        </span>
+
+        <button
+          type="button"
+          aria-label="إزالة الملف"
+          title="إزالة الملف"
+        >
+          ×
+        </button>
+      `;
+
+      const removeButton =
+        item.querySelector(
+          "button"
+        );
+
+      removeButton?.addEventListener(
+        "click",
+        () => {
+          selectedFiles.splice(
+            index,
+            1
+          );
+
+          renderAttachmentPreview();
+        }
+      );
+
+      attachmentPreview.appendChild(
+        item
+      );
+    }
+  );
+}
+
 /* =========================================================
-   PROJECTS
+   PROJECT ELEMENTS
 ========================================================= */
 
 const createProjectButton =
@@ -963,14 +1376,19 @@ const projectList =
     "projectList"
   );
 
+/* =========================================================
+   PROJECT MODAL
+========================================================= */
+
 function openProjectModal() {
   projectModal?.classList.remove(
     "hidden"
   );
 
   setTimeout(
-    () =>
-      projectNameInput?.focus(),
+    () => {
+      projectNameInput?.focus();
+    },
     50
   );
 }
@@ -996,21 +1414,65 @@ closeProjectModal?.addEventListener(
   closeProjectModalFn
 );
 
+projectModal?.addEventListener(
+  "click",
+  (event) => {
+    if (
+      event.target ===
+      projectModal
+    ) {
+      closeProjectModalFn();
+    }
+  }
+);
+
+projectNameInput?.addEventListener(
+  "keydown",
+  (event) => {
+    if (
+      event.key === "Enter"
+    ) {
+      event.preventDefault();
+
+      confirmCreateProject?.click();
+    }
+  }
+);
+
+/* =========================================================
+   CREATE PROJECT
+========================================================= */
+
 confirmCreateProject?.addEventListener(
   "click",
   () => {
     const name =
       projectNameInput?.value.trim();
 
-    if (!name) return;
+    if (!name) {
+      projectNameInput?.focus();
+      return;
+    }
 
     const project = {
       id: createId("project"),
+
       name,
+
       code: "",
+
       errors: "",
+
       messages: [],
-      createdAt: Date.now()
+
+      /*
+       * ملفات المشروع.
+       */
+
+      files: [],
+
+      createdAt:
+        Date.now()
     };
 
     projects.unshift(
@@ -1023,9 +1485,19 @@ confirmCreateProject?.addEventListener(
 
     renderProjects();
 
-    showPage("projects");
+    /*
+     * افتح المشروع مباشرة.
+     */
+
+    openProject(
+      project.id
+    );
   }
 );
+
+/* =========================================================
+   PROJECT LIST
+========================================================= */
 
 function renderProjects() {
   if (!projectList) return;
@@ -1048,6 +1520,8 @@ function renderProjects() {
         document.createElement(
           "button"
         );
+
+      card.type = "button";
 
       card.className =
         "project-card";
@@ -1099,6 +1573,14 @@ function openProject(
 
   if (!project) return;
 
+  if (
+    !Array.isArray(
+      project.files
+    )
+  ) {
+    project.files = [];
+  }
+
   const name =
     document.getElementById(
       "workspaceProjectName"
@@ -1119,6 +1601,9 @@ function openProject(
       project.code || "";
   }
 
+  latestErrorReport =
+    project.errors || "";
+
   showPage("project");
 }
 
@@ -1134,7 +1619,10 @@ document
     "click",
     () => {
       renderProjects();
-      showPage("projects");
+
+      showPage(
+        "projects"
+      );
     }
   );
 
@@ -1159,10 +1647,11 @@ document
               ".workspace-tab"
             )
             .forEach(
-              (item) =>
+              (item) => {
                 item.classList.remove(
                   "active"
-                )
+                );
+              }
             );
 
           tab.classList.add(
@@ -1174,10 +1663,11 @@ document
               ".workspace-panel"
             )
             .forEach(
-              (panel) =>
+              (panel) => {
                 panel.classList.remove(
                   "active"
-                )
+                );
+              }
             );
 
           const panel =
@@ -1188,6 +1678,25 @@ document
           panel?.classList.add(
             "active"
           );
+
+          /*
+           * عند فتح صفحة الأخطاء
+           * نعرض آخر تقرير محفوظ.
+           */
+
+          if (
+            workspace ===
+            "errors"
+          ) {
+            const project =
+              getCurrentProject();
+
+            renderErrorReport(
+              project?.errors ||
+              latestErrorReport ||
+              ""
+            );
+          }
         }
       );
     }
@@ -1206,11 +1715,7 @@ codeEditor?.addEventListener(
   "input",
   () => {
     const project =
-      projects.find(
-        (item) =>
-          item.id ===
-          currentProjectId
-      );
+      getCurrentProject();
 
     if (!project) return;
 
@@ -1245,17 +1750,11 @@ const copyErrorsButton =
     "copyErrorsButton"
   );
 
-let latestErrorReport = "";
-
 analyzeCodeButton?.addEventListener(
   "click",
   async () => {
     const project =
-      projects.find(
-        (item) =>
-          item.id ===
-          currentProjectId
-      );
+      getCurrentProject();
 
     if (!project) return;
 
@@ -1263,8 +1762,10 @@ analyzeCodeButton?.addEventListener(
       codeEditor?.value || "";
 
     if (!code.trim()) {
-      analyzerStatus.textContent =
-        "اكتب كود Luau أولًا.";
+      if (analyzerStatus) {
+        analyzerStatus.textContent =
+          "اكتب كود Luau أولًا.";
+      }
 
       return;
     }
@@ -1272,14 +1773,18 @@ analyzeCodeButton?.addEventListener(
     analyzeCodeButton.disabled =
       true;
 
-    analyzerStatus.textContent =
-      "جاري الفحص...";
+    if (analyzerStatus) {
+      analyzerStatus.textContent =
+        "جاري الفحص...";
+    }
 
-    errorResults.innerHTML = `
-      <div class="empty-state">
-        جاري فحص الكود...
-      </div>
-    `;
+    if (errorResults) {
+      errorResults.innerHTML = `
+        <div class="empty-state">
+          جاري فحص الكود...
+        </div>
+      `;
+    }
 
     try {
       const response =
@@ -1299,8 +1804,14 @@ analyzeCodeButton?.addEventListener(
           }
         );
 
-      const data =
-        await response.json();
+      let data = null;
+
+      try {
+        data =
+          await response.json();
+      } catch {
+        data = null;
+      }
 
       if (!response.ok) {
         throw new Error(
@@ -1310,7 +1821,7 @@ analyzeCodeButton?.addEventListener(
       }
 
       latestErrorReport =
-        data.report || "";
+        data?.report || "";
 
       project.errors =
         latestErrorReport;
@@ -1321,11 +1832,13 @@ analyzeCodeButton?.addEventListener(
         latestErrorReport
       );
 
-      analyzerStatus.textContent =
-        "اكتمل الفحص.";
+      if (analyzerStatus) {
+        analyzerStatus.textContent =
+          "اكتمل الفحص.";
+      }
 
       /*
-       * نفتح صفحة الأخطاء تلقائيًا.
+       * الانتقال إلى الأخطاء.
        */
 
       document
@@ -1335,17 +1848,26 @@ analyzeCodeButton?.addEventListener(
         ?.click();
 
     } catch (error) {
-      analyzerStatus.textContent =
-        "حدث خطأ أثناء الفحص.";
+      console.error(
+        "Analyzer error:",
+        error
+      );
 
-      errorResults.innerHTML = `
-        <div class="lunex-error">
-          ${escapeHTML(
-            error?.message ||
-            "تعذر فحص الكود."
-          )}
-        </div>
-      `;
+      if (analyzerStatus) {
+        analyzerStatus.textContent =
+          "حدث خطأ أثناء الفحص.";
+      }
+
+      if (errorResults) {
+        errorResults.innerHTML = `
+          <div class="lunex-error">
+            ${escapeHTML(
+              error?.message ||
+              "تعذر فحص الكود."
+            )}
+          </div>
+        `;
+      }
 
     } finally {
       analyzeCodeButton.disabled =
@@ -1363,7 +1885,10 @@ function renderErrorReport(
 ) {
   if (!errorResults) return;
 
-  if (!report.trim()) {
+  const text =
+    String(report || "");
+
+  if (!text.trim()) {
     errorResults.innerHTML = `
       <div class="empty-state">
         لم يتم العثور على أخطاء.
@@ -1376,7 +1901,7 @@ function renderErrorReport(
   errorResults.innerHTML = `
     <div class="error-report">
       ${escapeHTML(
-        report
+        text
       ).replace(
         /\n/g,
         "<br>"
@@ -1392,16 +1917,24 @@ function renderErrorReport(
 copyErrorsButton?.addEventListener(
   "click",
   async () => {
-    if (!latestErrorReport) {
+    const project =
+      getCurrentProject();
+
+    const report =
+      project?.errors ||
+      latestErrorReport ||
+      "";
+
+    if (!report.trim()) {
       return;
     }
 
     try {
       await navigator.clipboard.writeText(
-        latestErrorReport
+        report
       );
 
-      const old =
+      const oldHTML =
         copyErrorsButton.innerHTML;
 
       copyErrorsButton.innerHTML =
@@ -1410,18 +1943,248 @@ copyErrorsButton?.addEventListener(
       setTimeout(
         () => {
           copyErrorsButton.innerHTML =
-            old;
+            oldHTML;
         },
         1500
       );
 
     } catch (error) {
       console.error(
+        "Copy errors:",
         error
       );
     }
   }
 );
+
+/* =========================================================
+   PROJECT CHAT
+========================================================= */
+
+const projectChatMessages =
+  document.getElementById(
+    "projectChatMessages"
+  );
+
+const projectChatForm =
+  document.getElementById(
+    "projectChatForm"
+  );
+
+const projectChatInput =
+  document.getElementById(
+    "projectChatInput"
+  );
+
+async function sendProjectMessage() {
+  const project =
+    getCurrentProject();
+
+  if (!project) return;
+
+  const text =
+    projectChatInput?.value.trim();
+
+  if (!text) return;
+
+  if (
+    !Array.isArray(
+      project.messages
+    )
+  ) {
+    project.messages = [];
+  }
+
+  project.messages.push({
+    role: "user",
+    content: text,
+    createdAt: Date.now()
+  });
+
+  projectChatInput.value = "";
+
+  saveStorage();
+
+  renderProjectChat();
+
+  try {
+    const response =
+      await fetch(
+        "/api/chat",
+        {
+          method: "POST",
+
+          headers: {
+            "Content-Type":
+              "application/json"
+          },
+
+          body: JSON.stringify({
+            message: `
+أنت داخل مشروع Roblox اسمه "${project.name}".
+
+كود المشروع الحالي:
+
+\`\`\`lua
+${String(
+  project.code || ""
+).slice(0, 100000)}
+\`\`\`
+
+أخطاء آخر فحص:
+
+${String(
+  project.errors || "لا يوجد تقرير."
+).slice(0, 30000)}
+
+سؤال المستخدم:
+
+${text}
+`,
+
+            history:
+              project.messages
+                .slice(0, -1)
+          })
+        }
+      );
+
+    const data =
+      await response.json();
+
+    if (!response.ok) {
+      throw new Error(
+        data?.error ||
+        "تعذر إكمال الطلب."
+      );
+    }
+
+    project.messages.push({
+      role: "assistant",
+      content:
+        data?.reply || "",
+      createdAt: Date.now()
+    });
+
+    saveStorage();
+
+    renderProjectChat();
+
+  } catch (error) {
+    project.messages.push({
+      role: "assistant",
+      content:
+        `تعذر إكمال الطلب.\n\n${
+          error?.message ||
+          "حدث خطأ."
+        }`,
+      createdAt: Date.now()
+    });
+
+    saveStorage();
+
+    renderProjectChat();
+  }
+}
+
+projectChatForm?.addEventListener(
+  "submit",
+  (event) => {
+    event.preventDefault();
+
+    sendProjectMessage();
+  }
+);
+
+projectChatInput?.addEventListener(
+  "keydown",
+  (event) => {
+    if (
+      event.key === "Enter" &&
+      !event.shiftKey
+    ) {
+      event.preventDefault();
+
+      projectChatForm?.requestSubmit();
+    }
+  }
+);
+
+function renderProjectChat() {
+  if (!projectChatMessages) {
+    return;
+  }
+
+  projectChatMessages.innerHTML =
+    "";
+
+  const project =
+    getCurrentProject();
+
+  if (
+    !project ||
+    !project.messages?.length
+  ) {
+    projectChatMessages.innerHTML = `
+      <div class="empty-state">
+        اسأل Lunex عن مشروعك.
+      </div>
+    `;
+
+    return;
+  }
+
+  project.messages.forEach(
+    (message) => {
+      const element =
+        document.createElement(
+          "div"
+        );
+
+      element.className =
+        `message ${
+          message.role === "user"
+            ? "user-message"
+            : "assistant-message"
+        }`;
+
+      const content =
+        document.createElement(
+          "div"
+        );
+
+      content.className =
+        "message-content";
+
+      element.appendChild(
+        content
+      );
+
+      projectChatMessages.appendChild(
+        element
+      );
+
+      if (
+        message.role ===
+        "assistant"
+      ) {
+        renderAssistantContent(
+          content,
+          message.content,
+          false
+        );
+      } else {
+        content.innerHTML =
+          formatPlainText(
+            message.content
+          );
+      }
+    }
+  );
+
+  projectChatMessages.scrollTop =
+    projectChatMessages.scrollHeight;
+}
 
 /* =========================================================
    UI DESIGNER
@@ -1457,14 +2220,18 @@ designerForm?.addEventListener(
         "button[type='submit']"
       );
 
-    button.disabled =
-      true;
+    if (button) {
+      button.disabled =
+        true;
+    }
 
-    designerResult.innerHTML = `
-      <div class="empty-state">
-        جاري تصميم الواجهة...
-      </div>
-    `;
+    if (designerResult) {
+      designerResult.innerHTML = `
+        <div class="empty-state">
+          جاري تصميم الواجهة...
+        </div>
+      `;
+    }
 
     try {
       const response =
@@ -1494,30 +2261,36 @@ designerForm?.addEventListener(
         );
       }
 
-      designerResult.innerHTML = `
-        <div class="designer-output">
-          ${escapeHTML(
-            data.design || ""
-          ).replace(
-            /\n/g,
-            "<br>"
-          )}
-        </div>
-      `;
+      if (designerResult) {
+        designerResult.innerHTML = `
+          <div class="designer-output">
+            ${escapeHTML(
+              data?.design || ""
+            ).replace(
+              /\n/g,
+              "<br>"
+            )}
+          </div>
+        `;
+      }
 
     } catch (error) {
-      designerResult.innerHTML = `
-        <div class="lunex-error">
-          ${escapeHTML(
-            error?.message ||
-            "تعذر إنشاء التصميم."
-          )}
-        </div>
-      `;
+      if (designerResult) {
+        designerResult.innerHTML = `
+          <div class="lunex-error">
+            ${escapeHTML(
+              error?.message ||
+              "تعذر إنشاء التصميم."
+            )}
+          </div>
+        `;
+      }
 
     } finally {
-      button.disabled =
-        false;
+      if (button) {
+        button.disabled =
+          false;
+      }
     }
   }
 );
@@ -1582,27 +2355,51 @@ sidebarOverlay?.addEventListener(
 );
 
 /* =========================================================
+   ESCAPE MODAL
+========================================================= */
+
+document.addEventListener(
+  "keydown",
+  (event) => {
+    if (
+      event.key === "Escape"
+    ) {
+      closeProjectModalFn();
+
+      closeSidebar();
+    }
+  }
+);
+
+/* =========================================================
    INIT
 ========================================================= */
 
-loadStorage();
-
-renderConversationList();
-
-renderProjects();
-
-if (
-  conversations.length
-) {
-  currentConversationId =
-    conversations[0].id;
+function init() {
+  loadStorage();
 
   renderConversationList();
-  renderCurrentConversation();
-} else {
-  showPage("chat");
+
+  renderProjects();
+
+  /*
+   * استعادة آخر محادثة.
+   */
+
+  if (conversations.length) {
+    currentConversationId =
+      conversations[0].id;
+
+    renderConversationList();
+
+    renderCurrentConversation();
+  } else {
+    showPage("chat");
+  }
+
+  console.log(
+    "Lunex frontend loaded."
+  );
 }
 
-console.log(
-  "Lunex frontend loaded."
-);
+init();
