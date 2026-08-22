@@ -1,35 +1,91 @@
 "use strict";
 
 /* =========================================================
-   LUNEX — FRONTEND APPLICATION
+   LUNEX — FRONTEND ENGINE
+========================================================= */
+
+const $ = (selector) => document.querySelector(selector);
+const $$ = (selector) => [...document.querySelectorAll(selector)];
+
+/* =========================================================
+   STATE
 ========================================================= */
 
 const state = {
-  busy: false,
-  messages: [],
-  controller: null
+  conversations: [],
+  currentConversationId: null,
+
+  projects: [],
+  currentProjectId: null,
+
+  attachments: [],
+  isSending: false,
+  isAnalyzing: false
 };
 
 /* =========================================================
-   DOM
+   STORAGE
 ========================================================= */
 
-const chat = document.getElementById("chat");
-const welcome = document.getElementById("welcome");
-const composer = document.getElementById("composer");
-const messageInput = document.getElementById("messageInput");
-const sendButton = document.getElementById("sendButton");
-const newChatButton = document.getElementById("newChatButton");
-const mobileMenuButton = document.getElementById("mobileMenuButton");
-const sidebar = document.getElementById("sidebar");
-const settingsButton = document.getElementById("settingsButton");
+const STORAGE_KEY = "lunex_state_v1";
+
+function saveState() {
+  try {
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        conversations: state.conversations,
+        projects: state.projects,
+        currentConversationId:
+          state.currentConversationId,
+        currentProjectId:
+          state.currentProjectId
+      })
+    );
+  } catch (error) {
+    console.warn("Lunex storage error:", error);
+  }
+}
+
+function loadState() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+
+    if (!raw) return;
+
+    const data = JSON.parse(raw);
+
+    if (Array.isArray(data.conversations)) {
+      state.conversations = data.conversations;
+    }
+
+    if (Array.isArray(data.projects)) {
+      state.projects = data.projects;
+    }
+
+    state.currentConversationId =
+      data.currentConversationId || null;
+
+    state.currentProjectId =
+      data.currentProjectId || null;
+
+  } catch (error) {
+    console.warn("Lunex load error:", error);
+  }
+}
 
 /* =========================================================
    UTILITIES
 ========================================================= */
 
+function id(prefix = "id") {
+  return `${prefix}_${Date.now()}_${Math.random()
+    .toString(36)
+    .slice(2, 9)}`;
+}
+
 function escapeHTML(value) {
-  return String(value)
+  return String(value ?? "")
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
@@ -37,447 +93,1492 @@ function escapeHTML(value) {
     .replaceAll("'", "&#039;");
 }
 
-function scrollToBottom(smooth = true) {
-  requestAnimationFrame(() => {
-    chat.scrollTo({
-      top: chat.scrollHeight,
-      behavior: smooth ? "smooth" : "auto"
-    });
-  });
+function formatText(value) {
+  return escapeHTML(value)
+    .replace(/\n/g, "<br>");
 }
 
-function autoResizeTextarea() {
-  messageInput.style.height = "auto";
-
-  const height = Math.min(
-    messageInput.scrollHeight,
-    190
-  );
-
-  messageInput.style.height = `${height}px`;
-}
-
-function setBusy(value) {
-  state.busy = value;
-
-  sendButton.disabled = value;
-  messageInput.disabled = value;
-
-  if (value) {
-    sendButton.setAttribute("aria-label", "إيقاف");
-  } else {
-    sendButton.setAttribute("aria-label", "إرسال");
-  }
+function now() {
+  return new Date().toISOString();
 }
 
 /* =========================================================
-   MESSAGE UI
+   ICONS
 ========================================================= */
 
-function createAvatar(type) {
-  const avatar = document.createElement("div");
+function renderIcons(root = document) {
 
-  avatar.className = "message-avatar";
+  root
+    .querySelectorAll("[data-icon]")
+    .forEach((element) => {
 
-  if (type === "user") {
-    avatar.innerHTML = `
-      <svg
-        viewBox="0 0 24 24"
-        width="17"
-        height="17"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="1.8"
-      >
-        <circle cx="12" cy="8" r="3.2"/>
-        <path d="M5.5 20c.8-4 3-6 6.5-6s5.7 2 6.5 6"/>
-      </svg>
-    `;
-  } else {
-    avatar.innerHTML = `
-      <svg
-        viewBox="0 0 24 24"
-        width="18"
-        height="18"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="1.7"
-        stroke-linejoin="round"
-      >
-        <path d="M12 3l2.4 6.6L21 12l-6.6 2.4L12 21l-2.4-6.6L3 12l6.6-2.4L12 3Z"/>
-        <circle cx="12" cy="12" r="1.6" fill="currentColor"/>
-      </svg>
-    `;
-  }
+      const name =
+        element.dataset.icon;
 
-  return avatar;
+      if (
+        window.LunexIcons &&
+        window.LunexIcons.icon
+      ) {
+        element.innerHTML =
+          window.LunexIcons.icon(name);
+      }
+    });
 }
 
-function addMessage(role, text) {
-  const message = document.createElement("article");
+/* =========================================================
+   NAVIGATION
+========================================================= */
 
-  message.className = `message ${role}`;
+const PAGE_NAMES = {
+  chat: "الدردشة",
+  projects: "المشاريع",
+  project: "المشروع",
+  designer: "مصمم الواجهات",
+  settings: "الإعدادات"
+};
 
-  const avatar = createAvatar(role);
+function showPage(page) {
 
-  const content = document.createElement("div");
-
-  content.className = "message-content";
-
-  content.textContent = text;
-
-  message.appendChild(avatar);
-  message.appendChild(content);
-
-  chat.appendChild(message);
-
-  state.messages.push({
-    role,
-    content: text
+  $$(".page").forEach((element) => {
+    element.classList.remove("active");
   });
 
-  scrollToBottom();
+  const target =
+    $(`#page-${page}`);
 
-  return message;
+  if (!target) return;
+
+  target.classList.add("active");
+
+  $$(".nav-item[data-page]").forEach((item) => {
+    item.classList.toggle(
+      "active",
+      item.dataset.page === page
+    );
+  });
+
+  $("#pageTitle").textContent =
+    PAGE_NAMES[page] || "Lunex";
+
+  closeMobileSidebar();
 }
 
-/* =========================================================
-   TYPING INDICATOR
-========================================================= */
-
-function createTypingMessage() {
-  const message = document.createElement("article");
-
-  message.className = "message ai";
-  message.dataset.typing = "true";
-
-  const avatar = createAvatar("ai");
-
-  const content = document.createElement("div");
-
-  content.className = "message-content";
-
-  content.innerHTML = `
-    <div class="typing-indicator" aria-label="Lunex يكتب">
-      <span></span>
-      <span></span>
-      <span></span>
-    </div>
-  `;
-
-  message.appendChild(avatar);
-  message.appendChild(content);
-
-  chat.appendChild(message);
-
-  scrollToBottom();
-
-  return message;
-}
-
-/* =========================================================
-   WELCOME
-========================================================= */
-
-function hideWelcome() {
-  if (!welcome) return;
-
-  welcome.style.display = "none";
-}
-
-function showWelcome() {
-  if (!welcome) return;
-
-  welcome.style.display = "";
-}
-
-/* =========================================================
-   SEND MESSAGE
-========================================================= */
-
-async function sendMessage(message) {
-  const cleanMessage = message.trim();
-
-  if (!cleanMessage || state.busy) {
-    return;
-  }
-
-  hideWelcome();
-
-  addMessage("user", cleanMessage);
-
-  messageInput.value = "";
-
-  autoResizeTextarea();
-
-  setBusy(true);
-
-  const typingMessage = createTypingMessage();
-
-  state.controller = new AbortController();
-
-  try {
-    const response = await fetch("/api/chat", {
-      method: "POST",
-
-      headers: {
-        "Content-Type": "application/json"
-      },
-
-      body: JSON.stringify({
-        message: cleanMessage
-      }),
-
-      signal: state.controller.signal
-    });
-
-    let data;
-
-    try {
-      data = await response.json();
-    } catch {
-      throw new Error(
-        "الخادم أعاد استجابة غير صالحة."
-      );
-    }
-
-    typingMessage.remove();
-
-    if (!response.ok) {
-      throw new Error(
-        data?.error ||
-        "حدث خطأ أثناء الاتصال بالخادم."
-      );
-    }
-
-    const reply =
-      typeof data?.reply === "string"
-        ? data.reply
-        : "لم تصل استجابة صالحة من Lunex.";
-
-    addMessage("ai", reply);
-
-  } catch (error) {
-
-    typingMessage.remove();
-
-    if (error.name === "AbortError") {
-      addMessage(
-        "ai",
-        "تم إيقاف الطلب."
-      );
-    } else {
-      console.error("LUNEX_CHAT_ERROR:", error);
-
-      addMessage(
-        "ai",
-        `تعذر إكمال الطلب.\n\n${error.message}`
-      );
-    }
-
-  } finally {
-    state.controller = null;
-
-    setBusy(false);
-
-    messageInput.focus();
-  }
-}
-
-/* =========================================================
-   COMPOSER
-========================================================= */
-
-composer?.addEventListener("submit", (event) => {
-  event.preventDefault();
-
-  if (state.busy) {
-    return;
-  }
-
-  sendMessage(messageInput.value);
-});
-
-messageInput?.addEventListener("input", () => {
-  autoResizeTextarea();
-});
-
-messageInput?.addEventListener("keydown", (event) => {
-
-  if (event.key !== "Enter") {
-    return;
-  }
-
-  if (event.shiftKey) {
-    return;
-  }
-
-  event.preventDefault();
-
-  if (!state.busy) {
-    composer.requestSubmit();
-  }
-});
-
-/* =========================================================
-   SUGGESTIONS
-========================================================= */
-
-document.querySelectorAll(".suggestion").forEach((button) => {
+$$(".nav-item[data-page]").forEach((button) => {
 
   button.addEventListener("click", () => {
 
-    const prompt =
-      button.dataset.prompt || "";
+    const page =
+      button.dataset.page;
 
-    if (!prompt) {
-      return;
+    if (page === "projects") {
+      renderProjects();
     }
 
-    messageInput.value = prompt;
-
-    autoResizeTextarea();
-
-    messageInput.focus();
-
-    composer.requestSubmit();
+    showPage(page);
   });
 
-});
-
-/* =========================================================
-   NEW CHAT
-========================================================= */
-
-newChatButton?.addEventListener("click", () => {
-
-  if (state.busy && state.controller) {
-    state.controller.abort();
-  }
-
-  state.messages = [];
-
-  chat
-    .querySelectorAll(".message")
-    .forEach((message) => {
-      message.remove();
-    });
-
-  showWelcome();
-
-  messageInput.value = "";
-
-  autoResizeTextarea();
-
-  setBusy(false);
-
-  messageInput.focus();
 });
 
 /* =========================================================
    MOBILE SIDEBAR
 ========================================================= */
 
-mobileMenuButton?.addEventListener("click", () => {
+function openMobileSidebar() {
+  $("#sidebar")?.classList.add("open");
+  $("#sidebarOverlay")?.classList.add("open");
+}
 
-  sidebar?.classList.toggle("open");
+function closeMobileSidebar() {
+  $("#sidebar")?.classList.remove("open");
+  $("#sidebarOverlay")?.classList.remove("open");
+}
 
-});
+$("#mobileMenu")?.addEventListener(
+  "click",
+  openMobileSidebar
+);
 
-document.querySelectorAll(".nav-button").forEach((button) => {
+$("#mobileClose")?.addEventListener(
+  "click",
+  closeMobileSidebar
+);
 
-  button.addEventListener("click", () => {
-
-    document
-      .querySelectorAll(".nav-button")
-      .forEach((item) => {
-        item.classList.remove("active");
-      });
-
-    button.classList.add("active");
-
-    if (window.innerWidth <= 700) {
-      sidebar?.classList.remove("open");
-    }
-
-  });
-
-});
+$("#sidebarOverlay")?.addEventListener(
+  "click",
+  closeMobileSidebar
+);
 
 /* =========================================================
-   SETTINGS
+   CONVERSATIONS
 ========================================================= */
 
-settingsButton?.addEventListener("click", () => {
+function createConversation() {
 
-  addMessage(
-    "ai",
-    "الإعدادات ستكون متاحة في لوحة Lunex القادمة."
+  const conversation = {
+    id: id("chat"),
+    title: "محادثة جديدة",
+    createdAt: now(),
+    updatedAt: now(),
+    messages: []
+  };
+
+  state.conversations.unshift(
+    conversation
   );
 
-  hideWelcome();
+  state.currentConversationId =
+    conversation.id;
 
-});
+  saveState();
+  renderConversations();
+  renderCurrentConversation();
+  showPage("chat");
+}
 
-/* =========================================================
-   CLOSE SIDEBAR WHEN CLICKING OUTSIDE
-========================================================= */
+function getCurrentConversation() {
 
-document.addEventListener("click", (event) => {
+  return state.conversations.find(
+    (conversation) =>
+      conversation.id ===
+      state.currentConversationId
+  );
+}
 
-  if (window.innerWidth > 700) {
+function renderConversations() {
+
+  const list =
+    $("#conversationList");
+
+  if (!list) return;
+
+  if (!state.conversations.length) {
+
+    list.innerHTML = `
+      <div class="empty-state">
+        لا توجد محادثات
+      </div>
+    `;
+
     return;
   }
 
-  if (!sidebar?.classList.contains("open")) {
+  list.innerHTML =
+    state.conversations
+      .map((conversation) => {
+
+        const active =
+          conversation.id ===
+          state.currentConversationId
+            ? "active"
+            : "";
+
+        return `
+          <button
+            class="conversation-item ${active}"
+            data-conversation-id="${escapeHTML(conversation.id)}"
+          >
+
+            <span class="conversation-item-title">
+              ${escapeHTML(conversation.title)}
+            </span>
+
+          </button>
+        `;
+      })
+      .join("");
+
+  $$(".conversation-item").forEach(
+    (button) => {
+
+      button.addEventListener(
+        "click",
+        () => {
+
+          state.currentConversationId =
+            button.dataset.conversationId;
+
+          saveState();
+          renderConversations();
+          renderCurrentConversation();
+
+          showPage("chat");
+        }
+      );
+
+    }
+  );
+}
+
+function renderCurrentConversation() {
+
+  const container =
+    $("#chatMessages");
+
+  if (!container) return;
+
+  const conversation =
+    getCurrentConversation();
+
+  if (
+    !conversation ||
+    !conversation.messages.length
+  ) {
+
+    container.innerHTML = `
+      <div class="welcome">
+
+        <div class="welcome-logo">
+          L
+        </div>
+
+        <h1>
+          كيف أقدر أساعدك؟
+        </h1>
+
+        <p>
+          برمجة، Luau، Roblox Studio، أفكار ومشاريع.
+        </p>
+
+      </div>
+    `;
+
     return;
   }
 
-  const insideSidebar =
-    sidebar.contains(event.target);
+  container.innerHTML =
+    conversation.messages
+      .map((message) => {
 
-  const menuButton =
-    mobileMenuButton?.contains(event.target);
+        return `
+          <div class="message ${message.role}">
+            <div class="message-bubble">
+              ${formatText(message.content)}
+            </div>
+          </div>
+        `;
+      })
+      .join("");
 
-  if (!insideSidebar && !menuButton) {
-    sidebar.classList.remove("open");
+  container.scrollTop =
+    container.scrollHeight;
+}
+
+function addMessage(
+  role,
+  content
+) {
+
+  let conversation =
+    getCurrentConversation();
+
+  if (!conversation) {
+
+    createConversation();
+
+    conversation =
+      getCurrentConversation();
   }
 
-});
+  conversation.messages.push({
+    role,
+    content,
+    createdAt: now()
+  });
+
+  conversation.updatedAt =
+    now();
+
+  if (
+    role === "user" &&
+    conversation.title === "محادثة جديدة"
+  ) {
+
+    conversation.title =
+      content
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 45) ||
+      "محادثة جديدة";
+  }
+
+  saveState();
+  renderConversations();
+  renderCurrentConversation();
+}
 
 /* =========================================================
-   HEALTH CHECK
+   CHAT
 ========================================================= */
 
-async function checkServer() {
+async function sendChatMessage() {
+
+  if (state.isSending) return;
+
+  const input =
+    $("#messageInput");
+
+  const message =
+    input.value.trim();
+
+  if (!message) return;
+
+  state.isSending = true;
+
+  $("#sendButton").disabled = true;
+
+  if (!state.currentConversationId) {
+    createConversation();
+  }
+
+  const conversation =
+    getCurrentConversation();
+
+  const history =
+    conversation?.messages || [];
+
+  addMessage(
+    "user",
+    message
+  );
+
+  input.value = "";
+  autoResize(input);
+
+  const loadingId =
+    id("loading");
+
+  appendLoadingMessage(
+    loadingId
+  );
 
   try {
 
     const response =
-      await fetch("/api/health", {
-        method: "GET",
-        cache: "no-store"
+      await fetch("/api/chat", {
+        method: "POST",
+
+        headers: {
+          "Content-Type":
+            "application/json"
+        },
+
+        body: JSON.stringify({
+          message,
+          history
+        })
       });
 
-    if (!response.ok) {
-      throw new Error("Server unavailable");
+    const data =
+      await response.json();
+
+    removeLoadingMessage(
+      loadingId
+    );
+
+    if (!response.ok || !data.ok) {
+
+      throw new Error(
+        data.error ||
+        "تعذر إكمال الطلب."
+      );
     }
 
-    const data = await response.json();
-
-    console.log(
-      `[Lunex] ${data.name} — ${data.service}`
+    addMessage(
+      "assistant",
+      data.reply
     );
 
   } catch (error) {
 
-    console.warn(
-      "[Lunex] Backend health check failed."
+    removeLoadingMessage(
+      loadingId
     );
 
+    addMessage(
+      "assistant",
+      `تعذر إكمال الطلب.\n\n${error.message}`
+    );
+
+  } finally {
+
+    state.isSending = false;
+
+    $("#sendButton").disabled =
+      false;
+
+    input.focus();
+  }
+}
+
+function appendLoadingMessage(
+  loadingId
+) {
+
+  const container =
+    $("#chatMessages");
+
+  const element =
+    document.createElement("div");
+
+  element.className =
+    "message assistant";
+
+  element.id =
+    loadingId;
+
+  element.innerHTML = `
+    <div class="message-bubble">
+      جاري التفكير...
+    </div>
+  `;
+
+  container.appendChild(
+    element
+  );
+
+  container.scrollTop =
+    container.scrollHeight;
+}
+
+function removeLoadingMessage(
+  loadingId
+) {
+
+  document
+    .getElementById(loadingId)
+    ?.remove();
+}
+
+$("#chatForm")?.addEventListener(
+  "submit",
+  (event) => {
+    event.preventDefault();
+    sendChatMessage();
+  }
+);
+
+$("#messageInput")?.addEventListener(
+  "keydown",
+  (event) => {
+
+    if (
+      event.key === "Enter" &&
+      !event.shiftKey
+    ) {
+
+      event.preventDefault();
+      sendChatMessage();
+    }
+
+  }
+);
+
+/* =========================================================
+   TEXTAREA AUTO RESIZE
+========================================================= */
+
+function autoResize(element) {
+
+  if (!element) return;
+
+  element.style.height = "auto";
+
+  element.style.height =
+    Math.min(
+      element.scrollHeight,
+      180
+    ) + "px";
+}
+
+$("#messageInput")?.addEventListener(
+  "input",
+  (event) => {
+    autoResize(event.target);
+  }
+);
+
+$("#projectChatInput")?.addEventListener(
+  "input",
+  (event) => {
+    autoResize(event.target);
+  }
+);
+
+$("#designerInput")?.addEventListener(
+  "input",
+  (event) => {
+    autoResize(event.target);
+  }
+);
+
+/* =========================================================
+   FILE UPLOAD
+========================================================= */
+
+$("#attachButton")?.addEventListener(
+  "click",
+  () => {
+    $("#fileInput")?.click();
+  }
+);
+
+$("#fileInput")?.addEventListener(
+  "change",
+  (event) => {
+
+    const files =
+      [...event.target.files];
+
+    state.attachments =
+      files.slice(0, 8);
+
+    renderAttachments();
+  }
+);
+
+function renderAttachments() {
+
+  const container =
+    $("#attachmentPreview");
+
+  if (!container) return;
+
+  container.innerHTML =
+    state.attachments
+      .map((file, index) => {
+
+        return `
+          <div class="attachment">
+
+            <span
+              class="attachment-name"
+              title="${escapeHTML(file.name)}"
+            >
+              ${escapeHTML(file.name)}
+            </span>
+
+            <button
+              type="button"
+              class="attachment-remove"
+              data-file-index="${index}"
+            >
+              ×
+            </button>
+
+          </div>
+        `;
+      })
+      .join("");
+
+  $$(".attachment-remove")
+    .forEach((button) => {
+
+      button.addEventListener(
+        "click",
+        () => {
+
+          const index =
+            Number(
+              button.dataset.fileIndex
+            );
+
+          state.attachments.splice(
+            index,
+            1
+          );
+
+          renderAttachments();
+        }
+      );
+
+    });
+}
+
+/* =========================================================
+   PROJECTS
+========================================================= */
+
+function createProject(
+  name
+) {
+
+  const project = {
+
+    id: id("project"),
+
+    name:
+      name.trim(),
+
+    createdAt: now(),
+
+    updatedAt: now(),
+
+    code: "",
+
+    errors: [],
+
+    chat: []
+  };
+
+  state.projects.unshift(
+    project
+  );
+
+  state.currentProjectId =
+    project.id;
+
+  saveState();
+
+  return project;
+}
+
+function getCurrentProject() {
+
+  return state.projects.find(
+    (project) =>
+      project.id ===
+      state.currentProjectId
+  );
+}
+
+function renderProjects() {
+
+  const list =
+    $("#projectList");
+
+  if (!list) return;
+
+  if (!state.projects.length) {
+
+    list.innerHTML = `
+      <div class="empty-state">
+        لا توجد مشاريع حتى الآن.
+      </div>
+    `;
+
+    return;
   }
 
+  list.innerHTML =
+    state.projects
+      .map((project) => {
+
+        return `
+          <button
+            class="project-card"
+            data-project-id="${escapeHTML(project.id)}"
+          >
+
+            <div>
+              <div class="project-card-title">
+                ${escapeHTML(project.name)}
+              </div>
+
+              <div class="project-card-meta">
+                مشروع Luau
+              </div>
+            </div>
+
+            <div class="project-card-meta">
+              فتح المشروع
+            </div>
+
+          </button>
+        `;
+      })
+      .join("");
+
+  $$(".project-card").forEach(
+    (card) => {
+
+      card.addEventListener(
+        "click",
+        () => {
+
+          openProject(
+            card.dataset.projectId
+          );
+
+        }
+      );
+
+    }
+  );
 }
+
+function openProject(
+  projectId
+) {
+
+  state.currentProjectId =
+    projectId;
+
+  const project =
+    getCurrentProject();
+
+  if (!project) return;
+
+  saveState();
+
+  $("#workspaceProjectName")
+    .textContent =
+    project.name;
+
+  $("#codeEditor").value =
+    project.code || "";
+
+  renderErrors();
+
+  renderProjectChat();
+
+  switchWorkspace(
+    "editor"
+  );
+
+  showPage("project");
+}
+
+function switchWorkspace(
+  workspace
+) {
+
+  $$(".workspace-tab")
+    .forEach((tab) => {
+
+      tab.classList.toggle(
+        "active",
+        tab.dataset.workspace ===
+          workspace
+      );
+
+    });
+
+  $$(".workspace-panel")
+    .forEach((panel) => {
+
+      panel.classList.remove(
+        "active"
+      );
+
+    });
+
+  const panel =
+    $(`#workspace-${workspace}`);
+
+  panel?.classList.add(
+    "active"
+  );
+}
+
+$$(".workspace-tab")
+  .forEach((tab) => {
+
+    tab.addEventListener(
+      "click",
+      () => {
+
+        switchWorkspace(
+          tab.dataset.workspace
+        );
+
+      }
+    );
+
+  });
+
+/* =========================================================
+   PROJECT MODAL
+========================================================= */
+
+function openProjectModal() {
+
+  $("#projectModal")
+    ?.classList.remove(
+      "hidden"
+    );
+
+  $("#projectNameInput")
+    ?.focus();
+}
+
+function closeProjectModal() {
+
+  $("#projectModal")
+    ?.classList.add(
+      "hidden"
+    );
+
+  if ($("#projectNameInput")) {
+    $("#projectNameInput").value =
+      "";
+  }
+}
+
+$("#createProjectButton")
+  ?.addEventListener(
+    "click",
+    openProjectModal
+  );
+
+$("#closeProjectModal")
+  ?.addEventListener(
+    "click",
+    closeProjectModal
+  );
+
+$("#confirmCreateProject")
+  ?.addEventListener(
+    "click",
+    () => {
+
+      const input =
+        $("#projectNameInput");
+
+      const name =
+        input.value.trim();
+
+      if (!name) {
+        input.focus();
+        return;
+      }
+
+      const project =
+        createProject(name);
+
+      closeProjectModal();
+
+      renderProjects();
+
+      openProject(
+        project.id
+      );
+    }
+  );
+
+$("#projectNameInput")
+  ?.addEventListener(
+    "keydown",
+    (event) => {
+
+      if (
+        event.key === "Enter"
+      ) {
+
+        event.preventDefault();
+
+        $("#confirmCreateProject")
+          ?.click();
+      }
+
+    }
+  );
+
+$("#projectModal")
+  ?.addEventListener(
+    "click",
+    (event) => {
+
+      if (
+        event.target ===
+        $("#projectModal")
+      ) {
+        closeProjectModal();
+      }
+
+    }
+  );
+
+$("#backToProjects")
+  ?.addEventListener(
+    "click",
+    () => {
+
+      renderProjects();
+      showPage("projects");
+
+    }
+  );
+
+/* =========================================================
+   CODE EDITOR
+========================================================= */
+
+$("#codeEditor")
+  ?.addEventListener(
+    "input",
+    (event) => {
+
+      const project =
+        getCurrentProject();
+
+      if (!project) return;
+
+      project.code =
+        event.target.value;
+
+      project.updatedAt =
+        now();
+
+      saveState();
+    }
+  );
+
+/* =========================================================
+   LUau ANALYZER
+========================================================= */
+
+async function analyzeCode() {
+
+  if (state.isAnalyzing) return;
+
+  const project =
+    getCurrentProject();
+
+  if (!project) return;
+
+  const code =
+    $("#codeEditor")
+      .value;
+
+  if (!code.trim()) {
+
+    $("#analyzerStatus")
+      .textContent =
+      "اكتب كود Luau أولًا.";
+
+    return;
+  }
+
+  state.isAnalyzing =
+    true;
+
+  $("#analyzeCodeButton")
+    .disabled = true;
+
+  $("#analyzerStatus")
+    .textContent =
+    "جاري الفحص...";
+
+  switchWorkspace(
+    "errors"
+  );
+
+  try {
+
+    const response =
+      await fetch(
+        "/api/analyze",
+        {
+          method: "POST",
+
+          headers: {
+            "Content-Type":
+              "application/json"
+          },
+
+          body: JSON.stringify({
+            code
+          })
+        }
+      );
+
+    const data =
+      await response.json();
+
+    if (
+      !response.ok ||
+      !data.ok
+    ) {
+      throw new Error(
+        data.error ||
+        "تعذر فحص الكود."
+      );
+    }
+
+    project.errors =
+      parseAnalyzerResult(
+        data.report
+      );
+
+    project.updatedAt =
+      now();
+
+    saveState();
+
+    renderErrors();
+
+    $("#analyzerStatus")
+      .textContent =
+      "اكتمل الفحص.";
+
+  } catch (error) {
+
+    project.errors = [
+      {
+        severity: "error",
+        title: "تعذر إكمال الفحص",
+        line: "-",
+        message: error.message
+      }
+    ];
+
+    renderErrors();
+
+    $("#analyzerStatus")
+      .textContent =
+      "حدث خطأ أثناء الفحص.";
+
+  } finally {
+
+    state.isAnalyzing =
+      false;
+
+    $("#analyzeCodeButton")
+      .disabled = false;
+  }
+}
+
+$("#analyzeCodeButton")
+  ?.addEventListener(
+    "click",
+    analyzeCode
+  );
+
+/* =========================================================
+   PARSE AI REPORT
+========================================================= */
+
+function parseAnalyzerResult(
+  report
+) {
+
+  const text =
+    String(report || "")
+      .trim();
+
+  if (!text) {
+    return [];
+  }
+
+  /*
+   * Try to identify numbered issues.
+   */
+
+  const blocks =
+    text
+      .split(
+        /\n(?=(?:\d+[\).\-\:]|[-*])\s*)/
+      )
+      .map(
+        (item) => item.trim()
+      )
+      .filter(Boolean);
+
+  const issues = [];
+
+  for (
+    const block of blocks
+  ) {
+
+    const lower =
+      block.toLowerCase();
+
+    let severity =
+      "error";
+
+    if (
+      lower.includes("warning") ||
+      lower.includes("تحذير")
+    ) {
+      severity =
+        "warning";
+    }
+
+    if (
+      lower.includes("suggestion") ||
+      lower.includes("اقتراح")
+    ) {
+      severity =
+        "suggestion";
+    }
+
+    const lineMatch =
+      block.match(
+        /(?:line|السطر)\s*[:#-]?\s*(\d+)/i
+      );
+
+    issues.push({
+      severity,
+      title:
+        block
+          .split("\n")[0]
+          .slice(0, 150),
+
+      line:
+        lineMatch
+          ? lineMatch[1]
+          : "-",
+
+      message:
+        block
+    });
+  }
+
+  /*
+   * If Claude returned one normal paragraph,
+   * keep it as one result instead of losing it.
+   */
+
+  if (!issues.length) {
+
+    issues.push({
+      severity: "error",
+      title: "نتيجة الفحص",
+      line: "-",
+      message: text
+    });
+  }
+
+  return issues;
+}
+
+/* =========================================================
+   RENDER ERRORS
+========================================================= */
+
+function renderErrors() {
+
+  const container =
+    $("#errorResults");
+
+  const project =
+    getCurrentProject();
+
+  if (!container) return;
+
+  if (
+    !project ||
+    !project.errors ||
+    !project.errors.length
+  ) {
+
+    container.innerHTML = `
+      <div class="empty-state">
+        لا توجد نتائج فحص حتى الآن.
+      </div>
+    `;
+
+    return;
+  }
+
+  container.innerHTML =
+    project.errors
+      .map((error, index) => {
+
+        const title =
+          error.title ||
+          `خطأ ${index + 1}`;
+
+        const line =
+          error.line || "-";
+
+        const message =
+          error.message ||
+          "";
+
+        return `
+          <article class="error-card">
+
+            <div class="error-card-title">
+              ${escapeHTML(title)}
+            </div>
+
+            <div class="error-card-line">
+              ${escapeHTML(
+                error.severity || "error"
+              )}
+              ·
+              السطر:
+              ${escapeHTML(line)}
+            </div>
+
+            <div class="error-card-text">
+              ${formatText(message)}
+            </div>
+
+          </article>
+        `;
+
+      })
+      .join("");
+}
+
+$("#copyErrorsButton")
+  ?.addEventListener(
+    "click",
+    async () => {
+
+      const project =
+        getCurrentProject();
+
+      if (
+        !project ||
+        !project.errors?.length
+      ) {
+        return;
+      }
+
+      const text =
+        project.errors
+          .map(
+            (error, index) =>
+              `${index + 1}. ${
+                error.title || "خطأ"
+              }
+السطر: ${
+                error.line || "-"
+              }
+النوع: ${
+                error.severity || "error"
+              }
+${error.message || ""}`
+          )
+          .join("\n\n");
+
+      try {
+
+        await navigator.clipboard
+          .writeText(text);
+
+        $("#copyErrorsButton")
+          .querySelector("span")
+          ?.classList.add("copied");
+
+      } catch {
+        console.warn(
+          "Clipboard unavailable"
+        );
+      }
+    }
+  );
+
+/* =========================================================
+   PROJECT CHAT
+========================================================= */
+
+function renderProjectChat() {
+
+  const container =
+    $("#projectChatMessages");
+
+  const project =
+    getCurrentProject();
+
+  if (!container || !project) {
+    return;
+  }
+
+  if (!project.chat.length) {
+
+    container.innerHTML = `
+      <div class="empty-state">
+        اسأل Lunex عن أي شيء متعلق بمشروعك.
+      </div>
+    `;
+
+    return;
+  }
+
+  container.innerHTML =
+    project.chat
+      .map((message) => {
+
+        return `
+          <div class="message ${message.role}">
+            <div class="message-bubble">
+              ${formatText(message.content)}
+            </div>
+          </div>
+        `;
+
+      })
+      .join("");
+
+  container.scrollTop =
+    container.scrollHeight;
+}
+
+$("#projectChatForm")
+  ?.addEventListener(
+    "submit",
+    async (event) => {
+
+      event.preventDefault();
+
+      const input =
+        $("#projectChatInput");
+
+      const message =
+        input.value.trim();
+
+      if (!message) return;
+
+      const project =
+        getCurrentProject();
+
+      if (!project) return;
+
+      project.chat.push({
+        role: "user",
+        content: message
+      });
+
+      input.value = "";
+
+      renderProjectChat();
+
+      try {
+
+        const response =
+          await fetch(
+            "/api/chat",
+            {
+              method: "POST",
+
+              headers: {
+                "Content-Type":
+                  "application/json"
+              },
+
+              body: JSON.stringify({
+                message,
+                history:
+                  project.chat
+              })
+            }
+          );
+
+        const data =
+          await response.json();
+
+        if (
+          !response.ok ||
+          !data.ok
+        ) {
+          throw new Error(
+            data.error ||
+            "تعذر إكمال الطلب."
+          );
+        }
+
+        project.chat.push({
+          role: "assistant",
+          content: data.reply
+        });
+
+        project.updatedAt =
+          now();
+
+        saveState();
+
+        renderProjectChat();
+
+      } catch (error) {
+
+        project.chat.push({
+          role: "assistant",
+          content:
+            `تعذر إكمال الطلب.\n\n${error.message}`
+        });
+
+        renderProjectChat();
+      }
+
+    }
+  );
+
+/* =========================================================
+   UI DESIGNER
+========================================================= */
+
+$("#designerForm")
+  ?.addEventListener(
+    "submit",
+    async (event) => {
+
+      event.preventDefault();
+
+      const input =
+        $("#designerInput");
+
+      const result =
+        $("#designerResult");
+
+      const request =
+        input.value.trim();
+
+      if (!request) return;
+
+      result.textContent =
+        "جاري إنشاء التصميم...";
+
+      try {
+
+        const response =
+          await fetch(
+            "/api/ui-design",
+            {
+              method: "POST",
+
+              headers: {
+                "Content-Type":
+                  "application/json"
+              },
+
+              body: JSON.stringify({
+                request
+              })
+            }
+          );
+
+        const data =
+          await response.json();
+
+        if (
+          !response.ok ||
+          !data.ok
+        ) {
+          throw new Error(
+            data.error ||
+            "تعذر إنشاء التصميم."
+          );
+        }
+
+        result.textContent =
+          data.design;
+
+      } catch (error) {
+
+        result.textContent =
+          `تعذر إنشاء التصميم.\n\n${error.message}`;
+      }
+
+    }
+  );
+
+/* =========================================================
+   NEW CHAT
+========================================================= */
+
+$("#newChatButton")
+  ?.addEventListener(
+    "click",
+    () => {
+
+      createConversation();
+
+    }
+  );
 
 /* =========================================================
    INITIALIZE
@@ -485,20 +1586,60 @@ async function checkServer() {
 
 function initialize() {
 
-  autoResizeTextarea();
+  loadState();
 
-  messageInput?.focus();
+  renderIcons();
 
-  checkServer();
+  renderConversations();
 
-  console.log(
-    "%cLunex",
-    "font-size:24px;font-weight:700;"
-  );
+  renderProjects();
 
-  console.log(
-    "AI Engineering Studio initialized."
-  );
+  if (
+    state.currentConversationId &&
+    state.conversations.some(
+      (conversation) =>
+        conversation.id ===
+        state.currentConversationId
+    )
+  ) {
+
+    renderCurrentConversation();
+
+  } else {
+
+    state.currentConversationId =
+      null;
+
+    renderCurrentConversation();
+  }
+
+  if (
+    state.currentProjectId &&
+    state.projects.some(
+      (project) =>
+        project.id ===
+        state.currentProjectId
+    )
+  ) {
+
+    const project =
+      getCurrentProject();
+
+    if (project) {
+
+      $("#workspaceProjectName")
+        .textContent =
+        project.name;
+
+      $("#codeEditor").value =
+        project.code || "";
+
+      renderErrors();
+      renderProjectChat();
+    }
+  }
+
+  showPage("chat");
 }
 
 initialize();
