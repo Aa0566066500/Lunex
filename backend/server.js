@@ -5,6 +5,7 @@ require("dotenv").config();
 const path = require("path");
 const express = require("express");
 const cors = require("cors");
+const OpenAI = require("openai");
 
 const { apiLimiter } = require("./rateLimit");
 
@@ -12,11 +13,11 @@ const app = express();
 
 const PORT = process.env.PORT || 3000;
 
+app.disable("x-powered-by");
+
 /* =========================================================
    BASIC CONFIG
 ========================================================= */
-
-app.disable("x-powered-by");
 
 app.use(
   cors({
@@ -40,37 +41,27 @@ app.use(
 );
 
 /* =========================================================
-   API RATE LIMIT
+   RATE LIMIT
 ========================================================= */
 
 app.use("/api", apiLimiter);
 
 /* =========================================================
-   HEALTH CHECK
+   OPENAI
 ========================================================= */
 
-app.get("/api/health", (req, res) => {
-  res.json({
-    ok: true,
-    name: "Lunex",
-    status: "online"
-  });
-});
+const apiKey =
+  (process.env.AI_API_KEY || "").trim();
 
-/* =========================================================
-   API KEY CHECK
-========================================================= */
-
-function getApiKey() {
-  return (
-    process.env.AI_API_KEY ||
-    process.env.ANTHROPIC_API_KEY ||
-    ""
-  ).trim();
-}
+const openai = apiKey
+  ? new OpenAI({
+      apiKey
+    })
+  : null;
 
 function requireApiKey(req, res, next) {
-  if (!getApiKey()) {
+
+  if (!openai) {
     return res.status(500).json({
       ok: false,
       error:
@@ -82,29 +73,37 @@ function requireApiKey(req, res, next) {
 }
 
 /* =========================================================
-   AI REQUEST
+   HEALTH
+========================================================= */
+
+app.get("/api/health", (req, res) => {
+
+  res.json({
+    ok: true,
+    name: "Lunex",
+    status: "online",
+    aiConfigured: Boolean(openai)
+  });
+
+});
+
+/* =========================================================
+   AI FUNCTION
 ========================================================= */
 
 async function askAI({
   message,
   history = [],
-  system
+  instructions
 }) {
 
-  const apiKey = getApiKey();
-
-  if (!apiKey) {
+  if (!openai) {
     throw new Error(
       "AI_API_KEY is not configured on the server."
     );
   }
 
-  /*
-   * استخدم Anthropic مباشرة من السيرفر.
-   * المفتاح لا يصل أبدًا للمتصفح.
-   */
-
-  const messages = [];
+  const input = [];
 
   for (const item of history) {
 
@@ -124,81 +123,48 @@ async function askAI({
       continue;
     }
 
-    messages.push({
+    input.push({
       role: item.role,
       content: item.content.slice(0, 20000)
     });
+
   }
 
-  messages.push({
+  input.push({
     role: "user",
-    content: message.slice(0, 30000)
+    content: message.slice(0, 50000)
   });
 
-  const response = await fetch(
-    "https://api.anthropic.com/v1/messages",
-    {
-      method: "POST",
+  const response =
+    await openai.responses.create({
 
-      headers: {
-        "Content-Type": "application/json",
+      model:
+        process.env.AI_MODEL ||
+        "gpt-5.6",
 
-        "x-api-key": apiKey,
+      instructions:
+        instructions ||
+        `
+أنت Lunex، مساعد ذكاء اصطناعي احترافي.
 
-        "anthropic-version":
-          "2023-06-01"
-      },
+كن دقيقًا ومباشرًا.
+إذا كان السؤال برمجيًا، أعطِ حلًا عمليًا.
+إذا كان هناك كود، حلله قبل اقتراح التعديل.
+        `,
 
-      body: JSON.stringify({
-        model:
-          process.env.AI_MODEL ||
-          "claude-sonnet-4-20250514",
+      input,
 
-        max_tokens:
-          Number(
-            process.env.AI_MAX_TOKENS
-          ) || 4096,
+      max_output_tokens:
+        Number(
+          process.env.AI_MAX_TOKENS
+        ) || 5000
 
-        system:
-          system ||
-          "You are Lunex, an expert AI coding assistant.",
+    });
 
-        messages
-      })
-    }
+  return (
+    response.output_text ||
+    "لم يرجع الذكاء الاصطناعي نتيجة."
   );
-
-  const data =
-    await response.json();
-
-  if (!response.ok) {
-
-    console.error(
-      "AI provider error:",
-      data
-    );
-
-    throw new Error(
-      data?.error?.message ||
-      "AI provider request failed."
-    );
-  }
-
-  const text =
-    Array.isArray(data.content)
-      ? data.content
-          .filter(
-            (block) =>
-              block.type === "text"
-          )
-          .map(
-            (block) =>
-              block.text
-          )
-          .join("\n")
-      : "";
-
-  return text || "لم يرجع الذكاء الاصطناعي نصًا.";
 }
 
 /* =========================================================
@@ -228,47 +194,55 @@ app.post(
           ok: false,
           error: "الرسالة فارغة."
         });
+
       }
 
       const reply =
         await askAI({
+
           message,
+
           history,
 
-          system: `
-أنت Lunex، مساعد ذكاء اصطناعي احترافي.
+          instructions: `
+أنت Lunex، مساعد برمجة احترافي.
 
-أنت متخصص جدًا في:
+تخصصك الأساسي:
+
 - Roblox Studio
 - Luau
 - Lua
 - Roblox APIs
-- RemoteEvents و RemoteFunctions
-- Client/Server architecture
-- UI
+- RemoteEvents
+- RemoteFunctions
+- Client/Server
 - ModuleScripts
 - DataStore
 - MemoryStore
 - MessagingService
 - TweenService
 - RunService
-- Physics
-- Security
-- تحسين الأداء
+- UI
+- الفيزياء
+- الأداء
 - Debugging
-- Game development
+- أمن ألعاب Roblox
+- هندسة المشاريع
 
-عند سؤال المستخدم عن البرمجة:
+عند التعامل مع Luau:
+
 1. افهم المشكلة أولًا.
-2. أعطِ حلًا عمليًا.
-3. إذا كان هناك كود، صححه واشرح الخطأ.
-4. لا تخترع API غير موجودة.
-5. إذا كان هناك أكثر من حل، اختر الأفضل واذكر البدائل باختصار.
-6. اجعل أمثلة Luau متوافقة مع Roblox Studio.
-7. لا تكشف مفاتيح API أو أسرار الخادم.
-8. اكتب بالعربية عندما يكتب المستخدم بالعربية.
+2. لا تخترع API.
+3. اكتب كودًا صالحًا لـ Roblox Studio.
+4. وضح مكان وضع السكربت.
+5. انتبه للفرق بين LocalScript و Script و ModuleScript.
+6. انتبه لأمان RemoteEvents.
+7. إذا كان هناك خطأ، اشرح سببه.
+8. إذا كان هناك حل أفضل، اقترحه.
+9. لا تعرض أسرار السيرفر أو مفاتيح API.
+10. عندما يكتب المستخدم بالعربية، أجب بالعربية.
 
-كن دقيقًا ومباشرًا.
+اجعل إجاباتك عملية وليست عامة.
 `
         });
 
@@ -287,15 +261,17 @@ app.post(
       res.status(500).json({
         ok: false,
         error:
-          error.message ||
+          error?.message ||
           "تعذر إكمال الطلب."
       });
+
     }
+
   }
 );
 
 /* =========================================================
-   LUAU CODE ANALYZER
+   LUAU ANALYZER
 ========================================================= */
 
 app.post(
@@ -316,44 +292,46 @@ app.post(
           ok: false,
           error: "لم يتم إرسال كود."
         });
+
       }
 
       const report =
         await askAI({
 
           message: `
-افحص كود Luau التالي فحصًا دقيقًا جدًا:
+افحص كود Luau التالي فحصًا احترافيًا.
 
-ابدأ بتحليل:
-- Syntax
-- Runtime errors المحتملة
-- أخطاء Roblox API
-- أخطاء Client/Server
-- RemoteEvent security
-- المتغيرات غير الصحيحة
+ابحث عن:
+
+- Syntax errors
+- Runtime errors
 - nil references
-- مشاكل scope
+- أخطاء المتغيرات
+- أخطاء scope
+- أخطاء Roblox API
+- Client/Server mistakes
+- RemoteEvent security
+- RemoteFunction security
 - loops
 - connections
 - memory leaks
-- performance
+- performance problems
 - deprecated APIs
-- أخطاء typing إن وجدت
-- أخطاء منطقية واضحة
+- typing problems
+- logical bugs
+- أخطاء واضحة في ترتيب التنفيذ
 
-رتب النتائج من الأخطر إلى الأقل خطورة.
+رتب المشاكل من الأخطر إلى الأقل.
 
-لكل مشكلة حاول كتابة:
-رقم المشكلة
-السطر إن أمكن
-نوع المشكلة
-سبب المشكلة
-طريقة إصلاحها
+لكل مشكلة استخدم هذا الشكل:
 
-إذا لم تجد أخطاء حقيقية، قل ذلك بوضوح.
+1. المشكلة:
+السطر:
+الخطورة:
+السبب:
+الحل:
 
-لا تغيّر الكود.
-لا تختصر المشاكل المهمة.
+إذا لم تجد خطأ مؤكدًا، لا تخترع خطأ.
 
 الكود:
 
@@ -362,13 +340,18 @@ ${code.slice(0, 100000)}
 \`\`\`
 `,
 
-          system: `
-أنت Lunex Code Analyzer.
+          instructions: `
+أنت Lunex Luau Analyzer.
 
-أنت محلل متخصص في Luau وRoblox Studio.
-مهمتك تحليل الكود بدقة وليس تأليف أخطاء غير موجودة.
+مهمتك تحليل Luau وRoblox Studio بدقة شديدة.
 
-إذا لم تكن متأكدًا من مشكلة، وضح أنها احتمالية بدل اعتبارها خطأ مؤكدًا.
+لا تخترع أخطاء.
+فرق بين:
+- خطأ مؤكد
+- مشكلة محتملة
+- تحسين اختياري
+
+ركز على المشاكل التي يمكن أن تسبب فشل السكربت أو مشاكل أمان أو أداء.
 `
         });
 
@@ -387,10 +370,12 @@ ${code.slice(0, 100000)}
       res.status(500).json({
         ok: false,
         error:
-          error.message ||
+          error?.message ||
           "تعذر فحص الكود."
       });
+
     }
+
   }
 );
 
@@ -414,44 +399,53 @@ app.post(
 
         return res.status(400).json({
           ok: false,
-          error: "اكتب وصف التصميم أولًا."
+          error:
+            "اكتب وصف التصميم أولًا."
         });
+
       }
 
       const design =
         await askAI({
 
           message: `
-المستخدم يريد تصميم واجهة.
-
-طلب المستخدم:
+صمم واجهة احترافية بناءً على طلب المستخدم:
 
 ${request}
 
-أنشئ له تصورًا احترافيًا للواجهة.
+قدم:
 
-حدد:
 - Layout
-- الأزرار
-- الألوان
-- الأحجام
 - ترتيب العناصر
-- التفاعل
-- حالات Hover/Active
+- الأزرار
+- الأيقونات
+- الأحجام
+- المسافات
+- الألوان
+- الخطوط
+- الحالات التفاعلية
 - الجوال
 - الكمبيوتر
+- تجربة المستخدم
 
-إذا كان التصميم مخصصًا لـ Roblox Studio، اجعل المقترحات مناسبة لـ Roblox UI.
+إذا كان التصميم لـ Roblox Studio،
+اجعله مناسبًا لـ Roblox UI.
 
-لا تستخدم صورًا أو ملصقات بشكل عشوائي.
-ركز على واجهة نظيفة واحترافية.
+لا تستخدم ملصقات أو عناصر عشوائية.
+اجعل التصميم نظيفًا وحديثًا.
 `,
 
-          system: `
+          instructions: `
 أنت Lunex UI Designer.
 
-أنت متخصص في تصميم واجهات التطبيقات والألعاب.
-اجعل التصاميم حديثة وبسيطة وعملية.
+متخصص في:
+- Web UI
+- Mobile UI
+- Roblox UI
+- UX
+- Design systems
+
+ركز على التصميم العملي والاحترافي.
 `
         });
 
@@ -470,10 +464,12 @@ ${request}
       res.status(500).json({
         ok: false,
         error:
-          error.message ||
+          error?.message ||
           "تعذر إنشاء التصميم."
       });
+
     }
+
   }
 );
 
@@ -493,10 +489,11 @@ app.use(
 );
 
 /*
- * مهم:
- * لا نستخدم app.get("*")
- * لأن إصدارات Express الحديثة
- * قد ترفض هذا المسار.
+ * لا تستخدم:
+ *
+ * app.get("*")
+ *
+ * لأن Express 5 قد يرفض هذا المسار.
  */
 
 app.use(
@@ -515,6 +512,7 @@ app.use(
         "index.html"
       )
     );
+
   }
 );
 
@@ -531,13 +529,16 @@ app.use(
 
       return res.status(404).json({
         ok: false,
-        error: "API endpoint not found."
+        error:
+          "API endpoint not found."
       });
+
     }
 
     res.status(404).send(
       "Lunex page not found."
     );
+
   }
 );
 
@@ -546,12 +547,7 @@ app.use(
 ========================================================= */
 
 app.use(
-  (
-    error,
-    req,
-    res,
-    next
-  ) => {
+  (error, req, res, next) => {
 
     console.error(
       "SERVER ERROR:",
@@ -567,6 +563,7 @@ app.use(
       error:
         "Internal server error."
     });
+
   }
 );
 
@@ -584,9 +581,8 @@ app.listen(
     );
 
     console.log(
-      `AI key configured: ${
-        Boolean(getApiKey())
-      }`
+      `OpenAI configured: ${Boolean(openai)}`
     );
+
   }
 );
